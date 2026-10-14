@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the PHP 8.5 one-click installer for Windows (x64, NTS, VS17).
 
@@ -375,7 +375,7 @@ if (-not $SkipCompile) {
     "$hash  $SetupName.exe" | Out-File -Encoding ascii (Join-Path $OutDir "$SetupName.exe.sha256.txt")
 }
 $buildInfo | ConvertTo-Json -Depth 4 |
-    Out-File -Encoding utf8 (Join-Path $OutDir 'build-info.json')
+    ForEach-Object { [IO.File]::WriteAllText((Join-Path $OutDir 'build-info.json'), $_, $utf8NoBom) }
 
 if (-not $SkipCompile) {
     $notes = @"
@@ -407,7 +407,9 @@ SHA-256（$SetupName.exe）：
 
 ``$hash``
 "@
-    $notes | Out-File -Encoding utf8 (Join-Path $OutDir 'release-notes.md')
+    # WriteAllText with UTF8(no BOM): Out-File -Encoding utf8 in PS 5.1 emits
+    # a BOM, which GitHub renders as a stray character at the top of the body.
+    [IO.File]::WriteAllText((Join-Path $OutDir 'release-notes.md'), $notes, $utf8NoBom)
 }
 
 if ($env:GITHUB_OUTPUT) {
