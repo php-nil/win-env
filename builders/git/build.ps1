@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the Git for Windows one-click installer for Windows x64.
 
