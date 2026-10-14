@@ -40,6 +40,9 @@ Compression=lzma2/max
 LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern
+; Built from the official pnpm brand mark (GitHub org avatar); the standalone
+; pnpm.exe itself embeds no icon resources.
+SetupIconFile=setup.ico
 UninstallDisplayIcon={app}\pnpm.exe
 UninstallDisplayName=pnpm {#MyAppVersion} (x64, win-env)
 VersionInfoVersion={#MyAppVersion}

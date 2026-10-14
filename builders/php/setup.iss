@@ -44,6 +44,8 @@ Compression=lzma2/max
 LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern
+; Icon extracted from the official php.exe (builders/php/setup.ico).
+SetupIconFile=setup.ico
 UninstallDisplayIcon={app}\php.exe
 UninstallDisplayName=PHP {#MyAppVersion} (x64, win-env)
 VersionInfoVersion={#MyAppVersion}

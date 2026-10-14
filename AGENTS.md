@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`）。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)。
 
 ## 二、仓库结构
 
@@ -38,6 +38,7 @@
 * 安装目录相关路径（证书等）使用 `__APP_DIR__` 占位符，安装器在 `ssPostInstall` 替换为真实目录，保证改目录不出错。
 * 包内命令（如 `nil`）用安装根目录的 `.bat` 包装器（`%~dp0php.exe %~dp0xxx.phar %*`）实现，禁止依赖调用方工作目录。
 * 固定 `AppId`，重复安装替换同一实例；卸载必须清干净文件与 PATH（每次改安装器都要实测静默安装→卸载闭环）。
+* **安装器图标**：各安装包 exe 图标为对应软件的官方图标，以 `.ico` 随仓库保存在 `builders/<name>/setup.ico`，setup.iss 经 `SetupIconFile` 引用。优先从官方二进制资源提取（php/pwsh/git）；官方二进制无图标资源时（pnpm standalone）取官方 GitHub 组织头像生成。
 
 ### 3.3 PHP 打包策略
 
@@ -73,6 +74,7 @@
 | PHP 8.5 打包文档 | [doc/php-8.5.md](doc/php-8.5.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | pnpm 打包文档 | [doc/pnpm.md](doc/pnpm.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | Git 打包文档 | [doc/git.md](doc/git.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| PowerShell 7 打包文档 | [doc/pwsh.md](doc/pwsh.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | 体积优化评估 | [doc/compression.md](doc/compression.md) | 安装包压缩参数与内容的实测评估：Inno 侧已到顶、可选杠杆与代价（仅评估，未落地） |
 | 经验教训 | [doc/lessons.md](doc/lessons.md) | Windows / PowerShell / ISCC / Git 已验证的坑与规避规则 |
 
@@ -82,9 +84,9 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-14 | 全部安装包 exe 图标改为对应软件官方图标（`SetupIconFile` + `builders/<name>/setup.ico`；php/pwsh/git 提取自官方二进制，pnpm 取自官方 GitHub 组织头像） |
+| 2026-10-14 | 新增 PowerShell 7 v7.6.x 一键打包链路（官方 win-x64 zip，默认 `C:\pf\PowerShell7`，PATH 必加 + 右键菜单「在此处打开 PowerShell 7」+ Windows Terminal fragment 配置档） |
 | 2026-10-14 | PHP 包新增 `composer` 命令（getcomposer.org 官方 composer.phar + `composer.bat` 包装器；安装包 24.62→25.07 MiB，+0.46 MiB） |
 | 2026-10-14 | PHP 包内置 VC++ 运行库（app-local 7 个 CRT DLL，dark.exe+msiexec 解官方 vc_redist；安装包 24.36→24.62 MiB，+0.26 MiB） |
 | 2026-10-14 | 新增 Git v2.x.windows.y 一键打包链路（PortableGit，自解压 7z，默认 `C:\pf\Git`，PATH 追加 `<安装目录>\cmd`） |
 | 2026-10-14 | 内置 nilpack v0.2 与 `nil` 命令；PATH 由可选改为安装必加 |
-| 2026-10-14 | 修复 CI：ISCC `/?` 退出码 1 导致准备步骤失败 |
-| 2026-10-14 | 修复 Release 正文中文乱码：build.ps1 改为 UTF-8 BOM，产物文本改无 BOM 写出 |

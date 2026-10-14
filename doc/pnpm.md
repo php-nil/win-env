@@ -39,6 +39,7 @@
 
 ## 3. 安装包行为
 
+- 安装器 exe 图标为 pnpm 官方品牌图标（standalone pnpm.exe 本身无内嵌图标，ico 取自 pnpm 官方 GitHub 组织头像生成，随仓库保存在 `builders/pnpm/setup.ico`）。
 - 双击安装，向导默认目录 `C:\pf\pnpm`，可自行修改。
 - 安装内容即官方 `pnpm-win32-x64.zip` 解压后的暂存树（根目录为 `pnpm.exe`），安装器只做原样释放，不在安装期下载或拼装任何内容。
 - PATH（**必加，无安装选项**）：安装目录加入**系统** PATH，保证新开命令行中 `pnpm` 可直接使用。

@@ -41,6 +41,7 @@
 
 ## 3. 安装包行为
 
+- 安装器 exe 图标为 PHP 官方图标（构建时从官方 php.exe 提取，随仓库保存在 `builders/php/setup.ico`）。
 - 双击安装，向导默认目录 `C:\pf\php-8.5`，可自行修改。
 - 配置文件 `php.ini` 由构建脚本基于官方 `php.ini-development` 生成（不是直接使用原文件）：
   - `extension_dir = "ext"`；

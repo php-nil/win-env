@@ -40,6 +40,9 @@ Compression=lzma2/max
 LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern
+; Icon extracted from the official Git for Windows binaries
+; (builders/git/setup.ico).
+SetupIconFile=setup.ico
 ; Git does not have a single top-level exe that works as the uninstall
 ; display icon; cmd\git.exe is a small shim that delegates to the real
 ; bin\git.exe, so we point at that.

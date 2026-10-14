@@ -1,0 +1,85 @@
+name: Build PowerShell 7
+
+on:
+  workflow_dispatch:
+    inputs:
+      pwsh_version:
+        description: 'Exact PowerShell version without leading "v", e.g. 7.6.6. Leave empty for the latest stable v7.6.x release carrying PowerShell-*-win-x64.zip.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build PowerShell 7 installer
+        id: build
+        shell: powershell
+        env:
+          # build.ps1 的 GitHub Releases API 版本发现需要 GITHUB_TOKEN 提高速率限额
+          # （匿名 60 req/h → 认证 1000 req/h）。此处显式注入，防止 PowerShell
+          # 进程未继承 job-level 的自动注入。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\builders\pwsh\build.ps1 -PwshVersion '${{ inputs.pwsh_version }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "pwsh version = ${{ steps.build.outputs.pwsh_version }}"
+          Write-Host "Installer    = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pwsh-${{ steps.build.outputs.pwsh_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: pwsh-${{ steps.build.outputs.pwsh_version }}
+          name: 'PowerShell ${{ steps.build.outputs.pwsh_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
