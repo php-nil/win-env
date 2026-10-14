@@ -92,7 +92,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 - **不硬编码补丁版本号**：运行时经官方 GitHub Releases API 解析；解析为空立即终止并报错，不猜测 URL。API 请求在 CI 中自动携带注入的 `GITHUB_TOKEN`（未认证限流 60 次/小时 → 1000 次/小时），本机无该变量时退化为匿名请求。下载 URL 保持标准 `github.com/.../download/...` 形式（runner 网络正常；本机若 github.com 被沙箱阻断可经 API 资产端点手工取物放入缓存，缓存命中即不重复下载）。
 - **tag ↔ asset 版本号转换**：Git for Windows 的 GitHub tag 含字面 token `.windows.`（如 `2.56.0.windows.2`），asset 文件名把它换成 `.`（如 `PortableGit-2.56.0.2-64-bit.7z.exe`）。build.ps1 中 `Convert-TagVersionToAssetVersion` 函数负责这步转换，将来只要上游保持这个模式就自动工作。
-- **自解压方式**：官方 64 位包是 7-Zip SFX（`.7z.exe`），直接调用 `<exe> -o<dir> -y -b0` 即可静默解压，无需额外下载 7z 工具。解压脚本会断言 `cmd\git.exe` 或 `bin\git.exe` 存在，防止上游换 asset 类型或解压结构异常继续推进。
+- **解压方式**：官方 64 位包是 7-Zip GUI 模块 SFX（`.7z.exe`），直接调用 SFX 本身无法拿到控制台退出码。构建脚本使用 **7z.exe** 把它当作普通 `.7z` 归档解包（7z 同样能读 SFX），命令为 `7z x <file> -o<stage> -y -bb0`。7z 发现链：环境变量 `7Z` → `C:\Program Files\7-Zip\7z.exe` → PATH；CI runner 预装，缺失时 workflow 用 Chocolatey 兜底安装。解压后脚本断言 `cmd\git.exe` 或 `bin\git.exe` 存在，防止上游换 asset 类型或解压结构异常继续推进。
 - 暂存目录（`build/stage/git`）根目录即安装后的 `C:\pf\Git`，安装器只负责原样释放与 PATH 改写。
 - 下载缓存于 `build/cache`（按真实 asset 文件名缓存），重复构建不重复下载；下载失败自动重试 3 次。
 - 组装完成有强制冒烟测试：暂存 `cmd\git.exe --version`（或 `bin\git.exe` 兜底）的输出必须与解析出的版本号**逐字一致**（预期输出 `git version 2.56.0.windows.2`），失败即终止，绝不发布坏包。

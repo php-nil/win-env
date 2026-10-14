@@ -43,6 +43,21 @@ jobs:
           $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
           Write-Host "ISCC ready: $iscc (version $isccVer)"
 
+      - name: Locate 7-Zip
+        shell: powershell
+        run: |
+          $sevenZ = @(
+            'C:\Program Files\7-Zip\7z.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $sevenZ) {
+            Write-Host '7-Zip not preinstalled, installing via Chocolatey...'
+            choco install 7zip -y --no-progress --limit-output
+            $sevenZ = 'C:\Program Files\7-Zip\7z.exe'
+          }
+          if (-not (Test-Path $sevenZ)) { throw "7z.exe not found at $sevenZ" }
+          "7Z=$sevenZ" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "7z ready: $sevenZ"
+
       - name: Build Git installer
         id: build
         shell: powershell

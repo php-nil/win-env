@@ -132,12 +132,23 @@ Write-Step 'Downloading Git package'
 $gitExe = Join-Path $CacheDir $AssetFile
 Download-File $DownloadUrl $gitExe
 
-Write-Step 'Extracting Git package (7z SFX)'
-# The .7z.exe is a 7-Zip self-extracting archive. Standard SFX CLI:
-#   <exe> -o<output_dir> -y (suppress overwrite prompts) -b0 (quiet)
-& $gitExe "-o$StageDir" '-y' '-b0'
+Write-Step 'Extracting Git package (7z)'
+# PortableGit 的 .7z.exe 是 GUI 模块的 7-Zip SFX，直接调用不会返回
+# 控制台退出码。用 7z.exe 把它当作普通 .7z 归档解包（7z 同样能读 SFX）。
+$sevenZ = @(
+    $(if ($env:7Z) { $env:7Z }),
+    'C:\Program Files\7-Zip\7z.exe'
+) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if (-not $sevenZ) {
+    $cmd = Get-Command '7z.exe' -ErrorAction SilentlyContinue
+    if ($cmd) { $sevenZ = $cmd.Source }
+}
+if (-not $sevenZ) { throw '7z.exe not found. Install 7-Zip (choco install 7zip) or set $env:7Z.' }
+Write-Host "  7z: $sevenZ"
+
+& $sevenZ x $gitExe "-o$StageDir" '-y' '-bb0'
 if ($LASTEXITCODE -ne 0) {
-    throw "Git self-extraction failed with exit code $LASTEXITCODE"
+    throw "7z extraction failed with exit code $LASTEXITCODE"
 }
 
 # The archive root IS the Git tree (no top-level subdir like mingw64/).
