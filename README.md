@@ -21,6 +21,6 @@
 ```
 .github/workflows/   GitHub Actions（手动触发 + 自动发版）
 builders/<name>/     各环境的构建脚本与安装器脚本
-doc/                 各环境的打包文档（详细说明的唯一归属地）
+doc/                 各环境打包文档（详细说明的唯一归属地）与经验教训 doc/lessons.md
 build/               本地构建工作目录（已 gitignore）
 ```
