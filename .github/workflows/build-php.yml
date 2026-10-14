@@ -49,7 +49,10 @@ jobs:
           }
           if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
           "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
-          & $iscc /? | Select-Object -First 2
+          # NOTE: do NOT run `iscc /?` to verify: it prints help and exits 1,
+          # which fails the step. Report the binary version from file metadata.
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
 
       - name: Build PHP 8.5 installer
         id: build
