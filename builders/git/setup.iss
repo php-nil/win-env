@@ -2,13 +2,17 @@
 ; win-env - Git for Windows one-click installer
 ;
 ; Compiled by builders/git/build.ps1 via ISCC.exe with these defines:
-;   /DMyAppVersion=<2.56.0.windows.2>
+;   /DMyAppVersion=<2.56.0.windows.2>           full tag, for display strings
+;   /DMyAppNumericVersion=<2.56.0.2>            numeric-only, for VersionInfoVersion
 ;   /DStageDir=<staged binary tree>
 ;   /DOutputDir=<output folder>
 ;   /DOutputBaseFilename=<setup exe base name>
 ;
 #ifndef MyAppVersion
   #error MyAppVersion must be defined, e.g. /DMyAppVersion=2.56.0.windows.2
+#endif
+#ifndef MyAppNumericVersion
+  #error MyAppNumericVersion must be defined, e.g. /DMyAppNumericVersion=2.56.0.2
 #endif
 #ifndef StageDir
   #error StageDir must be defined
@@ -41,7 +45,7 @@ WizardStyle=modern
 ; bin\git.exe, so we point at that.
 UninstallDisplayIcon={app}\cmd\git.exe
 UninstallDisplayName=Git {#MyAppVersion} (x64, win-env)
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppNumericVersion}
 VersionInfoCompany=win-env
 VersionInfoDescription=Git for Windows one-click installer
 OutputDir={#OutputDir}

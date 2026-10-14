@@ -76,7 +76,38 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * **根因**：现有进程的环境块是启动时的快照；`WM_SETTINGCHANGE` 只通知新进程。
 * **规则**：验证时从注册表重新拼接 PATH：`$env:Path = [Environment]::GetEnvironmentVariable('Path','Machine') + ';' + [Environment]::GetEnvironmentVariable('Path','User')`，并把工作目录切到 `C:\`，再用 `where.exe` + 裸命令验证；卸载后同样复查注册表值长度变化（如 192→153）与条目消失。
 
-### 4.3 PowerShell 5 语法约束
+### 4.3 7-Zip GUI 模块 SFX 不能直接调用解压
+
+* **现象**：CI 里 PortableGit-2.56.0.2-64-bit.7z.exe 调用 `& $gitExe "-o$StageDir" '-y' '-b0'` 后，`$LASTEXITCODE` 为空（连 0 都不是），暂存目录空无一物，`-o` / `-y` / `-b0` 三个参数全被忽略。错误消息打印 `exit code ` 后冒号后面直接空白。
+* **根因**：7-Zip SFX 有两种内置模块——**Console 模块**（有控制台 I/O、回传 exit code、识别 CLI flags）和 **GUI 模块**（无控制台窗口、不回传 exit code、忽略所有 CLI 参数）。Git for Windows 的 PortableGit 资产用的是 **GUI 模块** SFX（`.7z.exe`），设计上就是双击弹 GUI 解压的。
+* **规则**：GUI 模块 SFX 一律改用 **7z.exe** 解包——7z 能把 SFX 文件当作普通 `.7z` 归档直接读取，命令为 `7z x <file> "-o<stage>" -y -bb0`。7z 发现链：环境变量 `7Z` → `C:\Program Files\7-Zip\7z.exe` → PATH。GitHub windows runner 预装 7-Zip；workflow 步骤里补 Chocolatey 兜底（`choco install 7zip -y --no-progress --limit-output`）。
+* **别猜 exit code**：对未知原生命令，先确认它是控制台程序还是 GUI 程序再决定调用方式；GUI 程序 `$LASTEXITCODE` 永远不可靠。
+
+## 7. Inno Setup `VersionInfoVersion` 必须是纯数字四段
+
+* **现象**：ISCC 编译 Git 安装时报 "Value of [Setup] section directive VersionInfoVersion is invalid"，指向 `VersionInfoVersion={#MyAppVersion}`。
+* **根因**：`VersionInfoVersion` 写入 Windows PE 资源（FileVersion），规范要求必须是 `a.b.c.d` 四段纯数字；Git 的 tag `2.56.0.windows.2` 含字面 token `.windows.`，ISCC 把它当版本号解析时拒绝。
+* **规则**：Git 打包传**两个** ISCC define：`MyAppVersion=2.56.0.windows.2`（完整 tag，用于 `AppVersion`、`AppVerName`、卸载显示名等所有**显示字符串**），`MyAppNumericVersion=2.56.0.2`（纯数字，用于 `VersionInfoVersion`）。build.ps1 里已有的 `$AssetVersion` 正好就是这个数值，直接传给 ISCC 即可。
+* **其他打包环境**：pnpm / PHP 版本号本身就是纯数字，`VersionInfoVersion={#MyAppVersion}` 够用。将来若遇到带非数字 token 的版本号（如某些 `-beta`、`-alpha` 后缀），按同样模式拆分显示版号和数值版号。
+
+## 8. GitHub Actions 中 `GITHUB_TOKEN` 必须显式注入 build step
+
+* **现象**：CI 构建 Git 时 `Invoke-RestMethod` 报 `API rate limit exceeded for <IP>`，且错误消息明确说是未认证请求（`Anonymous requests get a higher rate limit`）。匿名限额 60 req/h 很快用完，认证后是 1000 req/h。
+* **根因**：虽然 GitHub Actions 会自动给每个 workflow 注入 `GITHUB_TOKEN`，但在 Windows runner 的 PowerShell step 里它**不一定能被脚本进程正确继承**——build.ps1 里 `if ($env:GITHUB_TOKEN)` 判定为空，退化为匿名请求。pnpm workflow 此前也没显式传 token，只是碰巧没撞上 IP 积累的匿名限额。
+* **规则**：每个调用 GitHub Releases API 的构建 step 必须显式注入 token：
+
+```yaml
+- name: Build Git installer
+  shell: powershell
+  env:
+    GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  run: |
+    & .\builders\git\build.ps1 ...
+```
+
+* build.ps1 内部逻辑不变——只要 `$env:GITHUB_TOKEN` 非空就加 `Authorization: Bearer` 头。两个 workflow（Git / pnpm）都按此模式处理。
+
+### 4.4 PowerShell 5 语法约束
 
 * 不支持 `&&` / `||`：顺序执行用 `;`，条件执行用 `if ($LASTEXITCODE -eq 0)`。
 * git 命令加 `$env:GIT_PAGER='cat'` 防分页挂起；git 的进度信息走 **stderr**（工具里显示为红色/Error 样式属正常），以 `git ls-remote` 等实际结果判断成败，不看颜色。

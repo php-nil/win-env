@@ -61,6 +61,11 @@ jobs:
       - name: Build Git installer
         id: build
         shell: powershell
+        env:
+          # build.ps1 的 GitHub Releases API 版本发现需要 GITHUB_TOKEN 提高速率限额
+          # （匿名 60 req/h → 认证 1000 req/h）。此处显式注入，防止 PowerShell
+          # 进程未继承 job-level 的自动注入。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           & .\builders\git\build.ps1 -GitVersion '${{ inputs.git_version }}'
 

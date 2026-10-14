@@ -94,7 +94,35 @@ else {
     $candidate = $null
     for ($page = 1; $page -le 3 -and -not $candidate; $page++) {
         $apiUrl = "https://api.github.com/repos/$RepoSlug/releases?per_page=100&page=$page"
-        $releases = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+        $attempts = 3
+        $releases = $null
+        for ($a = 1; $a -le $attempts; $a++) {
+            try {
+                $releases = Invoke-RestMethod -Uri $apiUrl -Headers $headers -ErrorAction Stop
+                break
+            }
+            catch {
+                $resp = $_.Exception.Response
+                if ($resp -and $resp.StatusCode -eq [System.Net.HttpStatusCode]::Forbidden) {
+                    # 403 = rate limit。就算带了 token，同一 runner IP 之前匿名限流
+                    # 可能还在窗口内；读 X-RateLimit-Reset 头算等待秒数。
+                    $resetHeader = $resp.Headers['X-RateLimit-Reset']
+                    $waitSec = 30
+                    if ($resetHeader) {
+                        try {
+                            $resetEpoch = [int64]$resetHeader
+                            $epoch = [DateTimeOffset]::new(1970,1,1,[TimeSpan]::Zero,[DateTimeKind]::Utc)
+                            $nowEpoch = [int64](([DateTimeOffset]::UtcNow - $epoch).TotalSeconds)
+                            $waitSec  = [Math]::Max($waitSec, ($resetEpoch - $nowEpoch))
+                        } catch { }
+                    }
+                    Write-Warning "GitHub API rate-limited (403); waiting ${waitSec}s then retry ($a/$attempts)."
+                    Start-Sleep -Seconds $waitSec
+                    if ($a -lt $attempts) { continue }
+                }
+                throw
+            }
+        }
         if (-not $releases) { break }
         $candidate = @($releases |
             Where-Object {
@@ -195,6 +223,7 @@ if (-not $SkipCompile) {
     Write-Step 'Compiling installer'
     & $iscc (Join-Path $ScriptDir 'setup.iss') /Q `
         "/DMyAppVersion=$GitVersion" `
+        "/DMyAppNumericVersion=$AssetVersion" `
         "/DStageDir=$StageDir" `
         "/DOutputDir=$OutDir" `
         "/DOutputBaseFilename=$SetupName"
