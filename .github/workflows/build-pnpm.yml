@@ -1,4 +1,4 @@
-name: Build pnpm (Windows)
+name: Build pnpm
 
 # Manual build + auto release: Actions -> "Build pnpm (Windows)" -> Run workflow
 on:

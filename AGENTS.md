@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`）。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`）。
 
 ## 二、仓库结构
 
@@ -45,6 +45,7 @@
 * `php.ini` 基于官方 `php.ini-development` **生成**而非直接使用；`extension_dir="ext"`。
 * 默认扩展集在 build.ps1 的 `$EnabledExtensions` 单一清单维护（当前默认 pdo_pgsql，不含 mysqli/pdo_mysql）；`$DisabledExtensions` 强制注释禁用项，防止上游默认值变化破坏约定；重复生效行需去重。
 * Xdebug 放 `ext/php_xdebug.dll`，以 `zend_extension=xdebug` 加载；cacert.pem 放安装根目录并配置 `curl.cainfo`/`openssl.cafile`。
+* VC++ 运行库内置（app-local）：构建期从官方 `vc_redist.x64.exe`（dark.exe 解 Burn 包 + `msiexec /a` 解 MSI）提取 7 个 CRT DLL 放安装根目录，目标机器无需预装系统级运行库；版本取 aka.ms 最新并记入 `build-info.json`。
 
 ### 3.4 编码与脚本（Windows / PowerShell 5.1）
 
@@ -81,9 +82,9 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-14 | PHP 包新增 `composer` 命令（getcomposer.org 官方 composer.phar + `composer.bat` 包装器；安装包 24.62→25.07 MiB，+0.46 MiB） |
+| 2026-10-14 | PHP 包内置 VC++ 运行库（app-local 7 个 CRT DLL，dark.exe+msiexec 解官方 vc_redist；安装包 24.36→24.62 MiB，+0.26 MiB） |
 | 2026-10-14 | 新增 Git v2.x.windows.y 一键打包链路（PortableGit，自解压 7z，默认 `C:\pf\Git`，PATH 追加 `<安装目录>\cmd`） |
 | 2026-10-14 | 内置 nilpack v0.2 与 `nil` 命令；PATH 由可选改为安装必加 |
 | 2026-10-14 | 修复 CI：ISCC `/?` 退出码 1 导致准备步骤失败 |
 | 2026-10-14 | 修复 Release 正文中文乱码：build.ps1 改为 UTF-8 BOM，产物文本改无 BOM 写出 |
-| 2026-10-14 | 建立 AGENTS.md 全局约定与 doc/lessons.md 经验沉淀 |
-| 2026-10-14 | 新增 pnpm 12 一键打包链路（standalone `pnpm.exe`，版本经 GitHub Releases API 发现，默认 `C:\pf\pnpm`） |

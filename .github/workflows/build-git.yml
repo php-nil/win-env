@@ -1,4 +1,4 @@
-name: Build Git (Windows)
+name: Build Git
 
 on:
   workflow_dispatch:

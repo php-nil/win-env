@@ -1,4 +1,4 @@
-name: Build PHP 8.5 (Windows)
+name: Build PHP 8.5
 
 # Manual build + auto release: Actions -> "Build PHP 8.5 (Windows)" -> Run workflow
 on:
@@ -16,6 +16,10 @@ on:
         description: 'php-nil/nilpack release tag without "v", bundled as the nil command. Default 0.2.'
         required: false
         default: '0.2'
+      composer_version:
+        description: 'Composer version, e.g. 2.10.3. Leave empty for the latest stable from getcomposer.org.'
+        required: false
+        default: ''
       draft_release:
         description: 'Publish the GitHub release as a draft.'
         type: boolean
@@ -58,7 +62,7 @@ jobs:
         id: build
         shell: powershell
         run: |
-          & .\builders\php\build.ps1 -PhpVersion '${{ inputs.php_version }}' -XdebugVersion '${{ inputs.xdebug_version }}' -NilpackVersion '${{ inputs.nilpack_version }}'
+          & .\builders\php\build.ps1 -PhpVersion '${{ inputs.php_version }}' -XdebugVersion '${{ inputs.xdebug_version }}' -NilpackVersion '${{ inputs.nilpack_version }}' -ComposerVersion '${{ inputs.composer_version }}'
 
       - name: Show build metadata
         shell: powershell
@@ -66,6 +70,7 @@ jobs:
           Get-Content .\build\output\build-info.json
           Write-Host "PHP version   = ${{ steps.build.outputs.php_version }}"
           Write-Host "Xdebug version= ${{ steps.build.outputs.xdebug_version }}"
+          Write-Host "Composer ver. = ${{ steps.build.outputs.composer_version }}"
           Write-Host "Installer     = ${{ steps.build.outputs.setup_name }}"
 
       - name: Upload build artifact

@@ -112,6 +112,21 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * 不支持 `&&` / `||`：顺序执行用 `;`，条件执行用 `if ($LASTEXITCODE -eq 0)`。
 * git 命令加 `$env:GIT_PAGER='cat'` 防分页挂起；git 的进度信息走 **stderr**（工具里显示为红色/Error 样式属正常），以 `git ls-remote` 等实际结果判断成败，不看颜色。
 
+### 4.5 EAP=Stop 下原生命令写 stderr 会变成终止错误
+
+* **现象**：`$ErrorActionPreference='Stop'` 的构建脚本里执行 `composer.phar --version`，命令明明退出码 0、输出正常，步骤却直接终止，报 `NativeCommandError`，内容只是 Composer 的信息行 `PHP version 8.5.11 (...)`。
+* **根因**：PS 5.1 在 EAP=Stop 时把原生命令的**任何 stderr 输出**都转成终止性 `NativeCommandError`（`2>&1` 合流也躲不开）；Composer 会向 stderr 打一行 PHP 版本提示。此前冒烟的 `php -v`、`nilpack --version` 不写 stderr，所以从未触发。
+* **规则**：对已知会写 stderr 的原生命令，调用点局部放宽 EAP 并显式接住退出码：
+
+```powershell
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$out = (& $exe --version 2>&1) -join "`n"
+$code = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($code -ne 0) { throw ... }
+```
+
 ## 5. 网络与环境
 
 ### 5.1 本机沙箱可能阻断 github.com，但 CI runner 不受影响
@@ -130,3 +145,10 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * 安装目录相关配置用 `__APP_DIR__` 占位符写进文件，`CurStepChanged(ssPostInstall)` 时按 `{app}` 替换，改安装目录也不出错。
 * PATH 改写：按分号拆分、大小写不敏感比较、去空条目后幂等重写；安装追加、卸载精确删除自身条目。
 * 每次改 setup.iss 后必做：静默安装到**非默认目录** → 注册表 PATH + 裸命令验证 → 静默卸载 → 文件/PATH 双清零验证。
+
+## 9. vc_redist.x64.exe 是 WiX Burn 包，解包用 dark.exe + msiexec /a
+
+* **现象**：构建期想从官方 `vc_redist.x64.exe` 提取 CRT DLL 时连踩三坑——7-Zip 报 `Cannot open the file as archive`；`/layout <dir> /quiet` 退出码 `-2147024891`（0x80070005，拒绝访问）；本机也没有 Visual Studio 的 `VC\Redist` 目录可借。
+* **根因**：vc_redist 是 WiX **Burn** 引导包（不是自解压压缩包），7-Zip 不支持该格式；`/layout` 因 exe 清单要求管理员权限，提权后 Burn 引擎固定写 `C:\Windows\Temp\{GUID}`（忽略 TEMP 重定向），受限沙箱/CI 外部环境下直接失败。
+* **规则**：离线解包链——WiX 3.14 官方 `wix314-binaries.zip` 中的 `dark.exe -nologo -x <dir> vc_redist.x64.exe` 解出载荷（`AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi` + cab1.cab），再 `msiexec /a <msi> /qn TARGETDIR=<dir>` 管理安装提取，DLL 落在 `<dir>\System64\`。全程无需提权、不写系统目录，本地沙箱与 GitHub runner 行为一致。核心 CRT 7 DLL 均在 Minimum 包内（vcruntime140(+_1)、msvcp140(+_1/_2/_atomic_wait/_codecvt_ids)），concrt/vccorlib/vcamp/vcomp/vcruntime140_threads 按需另行评估。
+* **别忘**：`msiexec` 是异步进程，PowerShell 里用 `Start-Process -Wait -PassThru` 拿退出码，直调 `&` 可能提前返回。
