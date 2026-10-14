@@ -4,23 +4,10 @@
 
 ## 打包清单
 
-| 环境 | 版本/规格 | 默认安装目录 | 详细打包文档 |
-| --- | --- | --- | --- |
-| PHP | 8.5.x · NTS · VS17 · x64（含 Xdebug、cacert.pem、nilpack） | `C:\pf\php-8.5`（安装后 `php` / `nil` 直接可用） | [doc/php-8.5.md](doc/php-8.5.md) |
+| 环境 | 版本/规格 | 默认安装目录 |
+| --- | --- | --- |
+| PHP | 8.5.x · NTS · VS17 · x64（含 Xdebug、cacert.pem、nilpack） | `C:\pf\php-8.5`（安装后 `php` / `nil` 直接可用） |
+| pnpm | 12.x · standalone `pnpm.exe`（内置 Node.js 运行时）· x64 | `C:\pf\pnpm`（安装后 `pnpm` 直接可用） |
+| Git | v2.x.windows.y · 官方发行版（自解压 7z 整包提取）· x64 | `C:\pf\Git`（安装后 `git` 直接可用，PATH 追加 `<安装目录>\cmd`） |
 
-## 快速开始
-
-1. 推送本仓库到 GitHub；
-2. **Actions** → **Build PHP 8.5 (Windows)** → **Run workflow**（PHP/Xdebug 版本留空即自动取最新，可选草稿发布）；
-3. 在 **Releases** 的 `php-<version>` 标签下载 `php-<version>-setup-x64.exe`。
-
-安装包行为、组件来源、本地构建、参数与设计约定等细节见 [doc/php-8.5.md](doc/php-8.5.md)。
-
-## 目录结构
-
-```
-.github/workflows/   GitHub Actions（手动触发 + 自动发版）
-builders/<name>/     各环境的构建脚本与安装器脚本
-doc/                 各环境打包文档（详细说明的唯一归属地）与经验教训 doc/lessons.md
-build/               本地构建工作目录（已 gitignore）
-```
+> 各环境的详细打包文档（产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定等）见 [AGENTS.md 文档索引](AGENTS.md#四文档索引)。

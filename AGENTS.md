@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack），详见 [doc/php-8.5.md](doc/php-8.5.md)。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`）。
 
 ## 二、仓库结构
 
@@ -26,7 +26,7 @@
 
 * **版本不硬编码**：补丁版本运行时从官方目录列表解析；解析为空立即终止报错，不猜测 URL。workflow 保留手动指定版本的输入框。
 * **组件只走官方渠道**（PHP/Xdebug 走 windows.php.net，CA 走 curl.se，nilpack 走其 GitHub Release）；来源写入 `build-info.json` 与发布说明。
-* **暂存目录即安装目录**：`build/stage` 根目录布局等于安装后的 `C:\pf\<env>`，安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。
+* **暂存目录即安装目录**：`build/stage/<env>` 根目录布局等于安装后的 `C:\pf\<env>`（各环境暂存树按目录隔离），安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。
 * **冒烟测试是强制门槛**：组装完成后必须在暂存树上真实执行（当前为 `php -v` 见 Xdebug、`nilpack.phar --version`），失败即 throw，不产出坏包。
 * **产物三件套**：安装包 exe、`*.sha256.txt`、`build-info.json`，外加 `release-notes.md`；全部上传 Release 并保留同名 artifact。
 * **Release 标签**：`<env>-<version>`（如 `php-8.5.11`），同名重跑由 action 就地更新 Release。
@@ -70,6 +70,9 @@
 | 文档 | 路径 | 说明 |
 | --- | --- | --- |
 | PHP 8.5 打包文档 | [doc/php-8.5.md](doc/php-8.5.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| pnpm 打包文档 | [doc/pnpm.md](doc/pnpm.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| Git 打包文档 | [doc/git.md](doc/git.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| 体积优化评估 | [doc/compression.md](doc/compression.md) | 安装包压缩参数与内容的实测评估：Inno 侧已到顶、可选杠杆与代价（仅评估，未落地） |
 | 经验教训 | [doc/lessons.md](doc/lessons.md) | Windows / PowerShell / ISCC / Git 已验证的坑与规避规则 |
 
 ## 五、变更记录
@@ -78,9 +81,9 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
-| 2026-10-14 | 初始化仓库：PHP 8.5 一键打包链路（workflow 手动触发 + 自动发版，Inno Setup 安装器默认 `C:\pf\php-8.5`） |
-| 2026-10-14 | 默认扩展调整：启用 pdo_pgsql，显式禁用 mysqli/pdo_mysql（强制禁用清单） |
+| 2026-10-14 | 新增 Git v2.x.windows.y 一键打包链路（PortableGit，自解压 7z，默认 `C:\pf\Git`，PATH 追加 `<安装目录>\cmd`） |
 | 2026-10-14 | 内置 nilpack v0.2 与 `nil` 命令；PATH 由可选改为安装必加 |
 | 2026-10-14 | 修复 CI：ISCC `/?` 退出码 1 导致准备步骤失败 |
 | 2026-10-14 | 修复 Release 正文中文乱码：build.ps1 改为 UTF-8 BOM，产物文本改无 BOM 写出 |
 | 2026-10-14 | 建立 AGENTS.md 全局约定与 doc/lessons.md 经验沉淀 |
+| 2026-10-14 | 新增 pnpm 12 一键打包链路（standalone `pnpm.exe`，版本经 GitHub Releases API 发现，默认 `C:\pf\pnpm`） |

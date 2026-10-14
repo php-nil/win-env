@@ -48,7 +48,7 @@ $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
 if (-not $BuildDir) { $BuildDir = Join-Path $RepoRoot 'build' }
 
 $CacheDir  = Join-Path $BuildDir 'cache'
-$StageDir  = Join-Path $BuildDir 'stage'
+$StageDir  = Join-Path $BuildDir 'stage\php'
 $OutDir    = Join-Path $BuildDir 'output'
 
 $PhpBaseUrl    = 'https://windows.php.net/downloads/releases'
@@ -73,12 +73,14 @@ function Get-LinkHrefs([string]$url) {
     @($resp.Links | ForEach-Object { $_.href })
 }
 
-function Download-File([string]$url, [string]$dest) {
-    # Reuse a previously downloaded, non-empty cache file.
-    if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
+function Download-File([string]$url, [string]$dest, [switch]$NoCache) {
+    # Reuse a previously downloaded, non-empty cache file. -NoCache forces a
+    # fresh download (used for cacert.pem, which must not be pinned forever).
+    if (-not $NoCache -and (Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
         Write-Host "  cached: $dest"
         return
     }
+    if ($NoCache -and (Test-Path $dest)) { Remove-Item -Force $dest }
     $attempts = 3
     for ($i = 1; $i -le $attempts; $i++) {
         try {
@@ -167,10 +169,14 @@ Download-File "$XdebugBaseUrl/$XdebugVersion/$XdebugAsset" $xdZip
 
 Write-Step 'Downloading cacert.pem'
 $caPem = Join-Path $CacheDir 'cacert.pem'
-Download-File $CaCertUrl $caPem
+# CA bundle rotates regularly (~200 KB): always re-fetch so local rebuilds
+# never ship an expired bundle from a stale cache.
+Download-File $CaCertUrl $caPem -NoCache
 
 Write-Step "Downloading nilpack v$NilpackVersion (nil command)"
-$nilPharCache = Join-Path $CacheDir 'nilpack.phar'
+# Cache name is versioned: switching -NilpackVersion must not reuse the
+# previously cached phar of another version.
+$nilPharCache = Join-Path $CacheDir "nilpack-$NilpackVersion.phar"
 Download-File $NilpackUrl $nilPharCache
 
 # ---------------------------------------------------------------------------

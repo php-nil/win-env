@@ -12,7 +12,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 产物文件 | `php-<version>-setup-x64.exe`（约 25 MB，LZMA2 固实压缩） |
+| 产物文件 | `php-<version>-setup-x64.exe`（约 24 MB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（组件版本/来源元数据） |
 | Release 标签 | `php-<version>` |
 | PHP 规格 | 8.5.x · NTS（非线程安全）· VS17 · x64 |
@@ -73,7 +73,7 @@
 # 完整构建（自动发现最新版本，产物在 build\output）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\builders\php\build.ps1
 
-# 只做下载与组装，不编译安装包（无需 Inno Setup，产物在 build\stage）
+# 只做下载与组装，不编译安装包（无需 Inno Setup，产物在 build\stage\php）
 powershell -NoProfile -ExecutionPolicy Bypass -File .\builders\php\build.ps1 -SkipCompile
 
 # 指定版本
@@ -102,7 +102,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 ## 6. 设计约定
 
 - **不硬编码补丁版本号**：运行时解析官方目录列表；解析为空立即终止并报错，不猜测 URL。
-- 暂存目录（`build/stage`）根目录即安装后的 `C:\pf\php-8.5`，安装器只负责原样释放与少量配置改写（占位符替换、PATH）。
+- 暂存目录（`build/stage/php`，与其他环境的暂存树隔离）根目录即安装后的 `C:\pf\php-8.5`，安装器只负责原样释放与少量配置改写（占位符替换、PATH）。
 - 下载缓存于 `build/cache`，重复构建不重复下载；下载失败自动重试 3 次。
 - 组装完成有强制冒烟测试：暂存 `php.exe -v` 必须看到 PHP 8.5 与 Xdebug，`php.exe nilpack.phar --version` 必须输出 `Nil Pack Tool`，任一失败即终止，绝不发布坏包。
 - php.ini 扩展处理有三道保险：注释行按需取消注释、`$DisabledExtensions` 强制禁用清单（防止上游把 mysqli/pdo_mysql 改为默认开启）、重复生效行自动注释去重。

@@ -42,6 +42,12 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * **现象**：读取语言文件相关代码编译告警。
 * **规则**：对应缓冲区使用 `AnsiString`（官方示例做法）。修复后 ISCC 6.7.1 编译零警告零错误。
 
+### 2.4 `lzma2/max` 默认字典装不下暂存树，需显式 `LZMADictionarySize`
+
+* **现象**：PHP 暂存树约 98 MB、pnpm 约 52 MB，`Compression=lzma2/max` 出包后仍有约 3% 的可压缩空间未被利用。
+* **根因**：`lzma2/max` 预设的默认字典（小于 64 MB）无法在一个固实块内覆盖整个暂存树，跨块重复数据无法去重。
+* **规则**：两个安装器均显式设 `LZMADictionarySize=131072`（128 MB，KB 单位），实测 PHP 25.06→24.36 MB、pnpm 16.67→16.18 MB（各约 −2.8%/−2.9%）。代价：解包时额外约 130 MB 内存（开发机可忽略），压缩内存只发生在构建 runner 上。暂存树显著增大后按"大于字典则上调"复核。
+
 ## 3. PowerShell 正则与文本处理
 
 ### 3.1 `[regex]::Replace` 的 int 参数会被当成 RegexOptions
