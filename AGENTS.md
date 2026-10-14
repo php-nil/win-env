@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)。
 
 ## 二、仓库结构
 
@@ -75,6 +75,7 @@
 | pnpm 打包文档 | [doc/pnpm.md](doc/pnpm.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | Git 打包文档 | [doc/git.md](doc/git.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | PowerShell 7 打包文档 | [doc/pwsh.md](doc/pwsh.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| Node.js 打包文档 | [doc/node.md](doc/node.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | 体积优化评估 | [doc/compression.md](doc/compression.md) | 安装包压缩参数与内容的实测评估：Inno 侧已到顶、可选杠杆与代价（仅评估，未落地） |
 | 经验教训 | [doc/lessons.md](doc/lessons.md) | Windows / PowerShell / ISCC / Git 已验证的坑与规避规则 |
 
@@ -84,6 +85,7 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-14 | 新增 Node.js LTS 一键打包链路（官方 dist 索引自动发现最新 LTS，默认 `C:\pf\node`，PATH 必加；安装包 25.44 MiB） |
 | 2026-10-14 | 全部安装包 exe 图标改为对应软件官方图标（`SetupIconFile` + `builders/<name>/setup.ico`；php/pwsh/git 提取自官方二进制，pnpm 取自官方 GitHub 组织头像） |
 | 2026-10-14 | 新增 PowerShell 7 v7.6.x 一键打包链路（官方 win-x64 zip，默认 `C:\pf\PowerShell7`，PATH 必加 + 右键菜单「在此处打开 PowerShell 7」+ Windows Terminal fragment 配置档） |
 | 2026-10-14 | PHP 包新增 `composer` 命令（getcomposer.org 官方 composer.phar + `composer.bat` 包装器；安装包 24.62→25.07 MiB，+0.46 MiB） |
