@@ -19,14 +19,6 @@
 .PARAMETER PhpVersion
     Exact PHP 8.5 patch version, e.g. 8.5.11. Empty = latest published 8.5.x.
 
-.PARAMETER XdebugVersion
-    Exact Xdebug version, e.g. 3.5.3. Empty = latest release that ships a
-    PHP 8.5 / NTS / VS17 / x64 build.
-
-.PARAMETER ApcuVersion
-    Exact APCu version, e.g. 5.1.28. Empty = latest release that ships a
-    PHP 8.5 / NTS / VS17 / x64 build.
-
 .PARAMETER BuildDir
     Working directory for cache, staging and output. Default: <repo>\build.
 
@@ -36,20 +28,13 @@
 .PARAMETER NilpackVersion
     Release tag (without leading 'v') of php-nil/nilpack to bundle as the
     `nil` command. Default 0.2.
-
-.PARAMETER ComposerVersion
-    Exact Composer version, e.g. 2.10.3. Empty = latest stable from
-    getcomposer.org (version is read back from `composer.phar --version`).
 #>
 [CmdletBinding()]
 param(
     [string]$PhpVersion = '',
-    [string]$XdebugVersion = '',
-    [string]$ApcuVersion = '',
     [string]$BuildDir = '',
     [switch]$SkipCompile,
-    [string]$NilpackVersion = '0.2',
-    [string]$ComposerVersion = ''
+    [string]$NilpackVersion = '0.2'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -159,64 +144,40 @@ Write-Host "  PHP version : $PhpVersion"
 Write-Host "  PHP package : $PhpZipName"
 
 Write-Step 'Resolving Xdebug release'
-if ($XdebugVersion) {
-    if (-not (Test-VersionString $XdebugVersion)) { throw "Invalid -XdebugVersion: $XdebugVersion" }
-    $xdHrefs = Get-LinkHrefs "$XdebugBaseUrl/$XdebugVersion/"
-    $XdebugAsset = $xdHrefs |
-        Where-Object { $_ -eq "php_xdebug-$XdebugVersion-8.5-nts-vs17-x64.zip" } |
-        Select-Object -First 1
-    if (-not $XdebugAsset) {
-        throw "Xdebug $XdebugVersion does not provide a PHP 8.5 NTS VS17 x64 build"
-    }
-}
-else {
-    # Walk release directories from newest to oldest until one ships 8.5 NTS.
-    $versionDirs = Get-LinkHrefs $XdebugBaseUrl |
-        ForEach-Object { if ($_ -match '^(\d+\.\d+\.\d+)/$') { $matches[1] } } |
-        Sort-Object -Unique { [version]$_ } |
-        Sort-Object -Descending { [version]$_ }
+# Walk release directories from newest to oldest until one ships 8.5 NTS.
+$versionDirs = Get-LinkHrefs $XdebugBaseUrl |
+    ForEach-Object { if ($_ -match '^(\d+\.\d+\.\d+)/$') { $matches[1] } } |
+    Sort-Object -Unique { [version]$_ } |
+    Sort-Object -Descending { [version]$_ }
 
-    $XdebugAsset = $null
-    foreach ($v in $versionDirs) {
-        $hrefs = Get-LinkHrefs "$XdebugBaseUrl/$v/"
-        $asset = $hrefs |
-            Where-Object { $_ -eq "php_xdebug-$v-8.5-nts-vs17-x64.zip" } |
-            Select-Object -First 1
-        if ($asset) { $XdebugVersion = $v; $XdebugAsset = $asset; break }
-    }
-    if (-not $XdebugAsset) { throw 'Could not resolve an Xdebug build for PHP 8.5 NTS VS17 x64' }
+$XdebugAsset = $null
+foreach ($v in $versionDirs) {
+    $hrefs = Get-LinkHrefs "$XdebugBaseUrl/$v/"
+    $asset = $hrefs |
+        Where-Object { $_ -eq "php_xdebug-$v-8.5-nts-vs17-x64.zip" } |
+        Select-Object -First 1
+    if ($asset) { $XdebugVersion = $v; $XdebugAsset = $asset; break }
 }
+if (-not $XdebugAsset) { throw 'Could not resolve an Xdebug build for PHP 8.5 NTS VS17 x64' }
 Write-Host "  Xdebug version: $XdebugVersion"
 Write-Host "  Xdebug asset  : $XdebugAsset"
 
 Write-Step 'Resolving APCu release'
-if ($ApcuVersion) {
-    if (-not (Test-VersionString $ApcuVersion)) { throw "Invalid -ApcuVersion: $ApcuVersion" }
-    $apHrefs = Get-LinkHrefs "$ApcuBaseUrl/$ApcuVersion/"
-    $ApcuAsset = $apHrefs |
-        Where-Object { $_ -eq "php_apcu-$ApcuVersion-8.5-nts-vs17-x64.zip" } |
-        Select-Object -First 1
-    if (-not $ApcuAsset) {
-        throw "APCu $ApcuVersion does not provide a PHP 8.5 NTS VS17 x64 build"
-    }
-}
-else {
-    # Walk release directories from newest to oldest until one ships 8.5 NTS.
-    $apcuVersionDirs = Get-LinkHrefs $ApcuBaseUrl |
-        ForEach-Object { if ($_ -match '^(\d+\.\d+\.\d+)/$') { $matches[1] } } |
-        Sort-Object -Unique { [version]$_ } |
-        Sort-Object -Descending { [version]$_ }
+# Walk release directories from newest to oldest until one ships 8.5 NTS.
+$apcuVersionDirs = Get-LinkHrefs $ApcuBaseUrl |
+    ForEach-Object { if ($_ -match '^(\d+\.\d+\.\d+)/$') { $matches[1] } } |
+    Sort-Object -Unique { [version]$_ } |
+    Sort-Object -Descending { [version]$_ }
 
-    $ApcuAsset = $null
-    foreach ($v in $apcuVersionDirs) {
-        $hrefs = Get-LinkHrefs "$ApcuBaseUrl/$v/"
-        $asset = $hrefs |
-            Where-Object { $_ -eq "php_apcu-$v-8.5-nts-vs17-x64.zip" } |
-            Select-Object -First 1
-        if ($asset) { $ApcuVersion = $v; $ApcuAsset = $asset; break }
-    }
-    if (-not $ApcuAsset) { throw 'Could not resolve an APCu build for PHP 8.5 NTS VS17 x64' }
+$ApcuAsset = $null
+foreach ($v in $apcuVersionDirs) {
+    $hrefs = Get-LinkHrefs "$ApcuBaseUrl/$v/"
+    $asset = $hrefs |
+        Where-Object { $_ -eq "php_apcu-$v-8.5-nts-vs17-x64.zip" } |
+        Select-Object -First 1
+    if ($asset) { $ApcuVersion = $v; $ApcuAsset = $asset; break }
 }
+if (-not $ApcuAsset) { throw 'Could not resolve an APCu build for PHP 8.5 NTS VS17 x64' }
 Write-Host "  APCu version  : $ApcuVersion"
 Write-Host "  APCu asset    : $ApcuAsset"
 
@@ -265,18 +226,11 @@ $wixZip = Join-Path $CacheDir 'wix314-binaries.zip'
 Download-File $WixZipUrl $wixZip
 
 Write-Step 'Downloading Composer'
-if ($ComposerVersion) {
-    if (-not (Test-VersionString $ComposerVersion)) { throw "Invalid -ComposerVersion: $ComposerVersion" }
-    # Versioned cache: switching -ComposerVersion must not reuse another phar.
-    $composerPharCache = Join-Path $CacheDir "composer-$ComposerVersion.phar"
-    Download-File "$ComposerBaseUrl/download/$ComposerVersion/composer.phar" $composerPharCache
-}
-else {
-    # Latest stable rotates; never reuse cache (same rationale as cacert.pem).
-    # The exact version is read back from `composer.phar --version` later.
-    $composerPharCache = Join-Path $CacheDir 'composer-stable.phar'
-    Download-File "$ComposerBaseUrl/composer-stable.phar" $composerPharCache -NoCache
-}
+# Latest stable only (no version pinning): the file rotates upstream, so never
+# reuse cache (same rationale as cacert.pem). The exact version is read back
+# from `composer.phar --version` later and recorded in the metadata.
+$composerPharCache = Join-Path $CacheDir 'composer-stable.phar'
+Download-File "$ComposerBaseUrl/composer-stable.phar" $composerPharCache -NoCache
 
 # ---------------------------------------------------------------------------
 # 3. Assemble staging tree (root of StageDir == C:\pf\php-8.5 at install time)
@@ -426,10 +380,17 @@ if ($ini -match '(?m)^[ \t]*;?[ \t]*openssl\.cafile[ \t]*=') {
 }
 else { $ini += "`r`nopenssl.cafile = `"$caRel`"`r`n" }
 
+# Default timezone: Asia/Shanghai (php.ini-development ships this commented out).
+if ($ini -match '(?m)^[ \t]*;?[ \t]*date\.timezone[ \t]*=') {
+    $ini = [regex]::Replace($ini, '(?m)^[ \t]*;?[ \t]*(date\.timezone[ \t]*=)[^\r\n]*', '$1 Asia/Shanghai')
+}
+else { $ini += "`r`ndate.timezone = Asia/Shanghai`r`n" }
+
 # APCu (bundled PECL extension, enabled by default). Unlike the core
 # extensions above it has no line in php.ini-development, so the entry is
-# added explicitly; apc.enable_cli=1 makes it usable from the CLI too
-# (APCu is off in CLI by default).
+# added explicitly. CLI usage stays off (apc.enable_cli=0, the upstream
+# default): a CLI process would otherwise pay the shared-memory setup cost on
+# every invocation; enable it per-run with -d apc.enable_cli=1 when needed.
 $apcuBlock = @"
 
 ; >>> win-env bundled APCu $ApcuVersion >>>
@@ -437,7 +398,7 @@ $apcuBlock = @"
 extension=apcu
 [apcu]
 apc.enabled=1
-apc.enable_cli=1
+apc.enable_cli=0
 apc.shm_size=32M
 ; <<< win-env bundled APCu <<<
 "@
@@ -470,11 +431,23 @@ if ($LASTEXITCODE -ne 0 -or $phpVerOut -notmatch 'PHP 8\.5') {
     throw "Staged php.exe -v failed: $phpVerOut"
 }
 if ($phpVerOut -notmatch 'Xdebug v') { throw 'Xdebug not loaded in staged runtime' }
-$apcuOut = (& $phpExe -r "echo (function_exists('apcu_enabled') && apcu_enabled()) ? 'APCU-OK' : 'APCU-OFF';" 2>&1) -join "`n"
-if ($LASTEXITCODE -ne 0 -or $apcuOut -notmatch 'APCU-OK') {
-    throw "APCu not enabled in staged runtime: $apcuOut"
+# APCu must be loaded, and must stay off in CLI by default (apc.enable_cli=0).
+$apcuOut = (& $phpExe -r "echo extension_loaded('apcu') ? 'LOADED' : 'MISSING', '/', (apcu_enabled() ? 'CLI-ON' : 'CLI-OFF');" 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $apcuOut -notmatch 'LOADED/CLI-OFF') {
+    throw "APCu not loaded (or unexpectedly enabled in CLI): $apcuOut"
 }
-Write-Host "  APCu $ApcuVersion loaded and enabled"
+# Explicitly enabling APCu for a CLI run must actually work, which proves the
+# bundled php_apcu.dll is functional (store/fetch round-trip).
+$apcuOnOut = (& $phpExe -d apc.enable_cli=1 -r "echo (apcu_store('k', 42) && apcu_fetch('k') === 42) ? 'APCU-OK' : 'APCU-FAIL';" 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $apcuOnOut -notmatch 'APCU-OK') {
+    throw "APCu failed to store/fetch when explicitly enabled: $apcuOnOut"
+}
+Write-Host "  APCu $ApcuVersion loaded (CLI off by default, works with -d apc.enable_cli=1)"
+$tzOut = (& $phpExe -r "echo date_default_timezone_get();" 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $tzOut -notmatch 'Asia/Shanghai') {
+    throw "date.timezone not applied in staged runtime: $tzOut"
+}
+Write-Host '  date.timezone = Asia/Shanghai'
 $nilVerOut = (& $phpExe $nilPhar --version 2>&1) -join "`n"
 if ($LASTEXITCODE -ne 0 -or $nilVerOut -notmatch 'Nil Pack Tool') {
     throw "nilpack.phar smoke test failed: $nilVerOut"
@@ -491,8 +464,8 @@ $ErrorActionPreference = $prevEap
 if ($composerExit -ne 0 -or $composerVerOut -notmatch 'Composer version') {
     throw "composer.phar smoke test failed: $composerVerOut"
 }
-# For the latest-stable download the exact version is only known now.
-if (-not $ComposerVersion -and $composerVerOut -match 'Composer version (\d+\.\d+\.\d+)') {
+# The exact Composer version is only known after it ran.
+if ($composerVerOut -match 'Composer version (\d+\.\d+\.\d+)') {
     $ComposerVersion = $matches[1]
 }
 Write-Host "  Composer $ComposerVersion runs via php.exe"
@@ -548,7 +521,7 @@ $buildInfo = [ordered]@{
     nilpackVersion = $NilpackVersion
     nilpackUrl     = $NilpackUrl
     composerVersion = $ComposerVersion
-    composerUrl    = $(if ($composerPharCache -like '*composer-stable*') { "$ComposerBaseUrl/composer-stable.phar" } else { "$ComposerBaseUrl/download/$ComposerVersion/composer.phar" })
+    composerUrl    = "$ComposerBaseUrl/composer-stable.phar"
     vcRedistVersion = $VcRedistVersion
     vcRedistUrl    = $VcRedistUrl
     vcRuntimeDlls  = $VcRuntimeDlls
@@ -588,7 +561,8 @@ if (-not $SkipCompile) {
 - 安装后自动将安装目录加入系统 PATH，新开命令行可直接使用 ``php`` 与 ``nil`` 命令
 - 配置文件：基于官方 ``php.ini-development`` 生成的 ``php.ini``
 - 默认开启扩展：curl、fileinfo、exif、gd、intl、mbstring、openssl、pdo_pgsql、pdo_sqlite、sodium、sockets、sqlite3、zip
-- APCu：默认开启（``extension=apcu``，``apc.enabled=1``、``apc.enable_cli=1``、``apc.shm_size=32M``），Web 与命令行（``apcu_*`` 函数）均可用
+- APCu：默认开启（``extension=apcu``，``apc.enabled=1``、``apc.shm_size=32M``）；``apc.enable_cli=0`` 保持上游默认，CLI 下 ``apcu_*`` 函数默认不生效，需要时用 ``-d apc.enable_cli=1`` 单次开启
+- 默认时区：``date.timezone = Asia/Shanghai``
 - 默认不启用 MySQL 相关扩展（mysqli、pdo_mysql，php.ini 中已显式注释，需要时取消注释即可）
 - Xdebug：``zend_extension=xdebug``，``xdebug.mode=develop,debug,coverage``，监听 ``127.0.0.1:9003``
 - ``curl.cainfo`` / ``openssl.cafile`` 指向包内 ``cacert.pem``（安装后按实际目录自动改写）

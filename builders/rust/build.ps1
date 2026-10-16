@@ -54,9 +54,25 @@ $LlvmAsset   = "LLVM-$LlvmVersion-win64.exe"
 $LlvmUrl     = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmAsset"
 
 # xwin release to pull SDK extraction tool from.
-$XwinVersion = '0.6.5'
-$XwinAsset   = "xwin-$XwinVersion-x86_64-pc-windows-msvc.zip"
-$XwinUrl     = "https://github.com/Jake-Shadle/xwin/releases/download/$XwinVersion/$XwinAsset"
+# Auto-discover latest from GitHub API; avoids hardcoding a version that may
+# get removed (old tags get pruned). Download the .tar.gz Windows MSVC build.
+Write-Host 'Discovering latest xwin release...'
+try {
+    $xwinLatest = Invoke-RestMethod -UseBasicParsing `
+        -Uri 'https://api.github.com/repos/Jake-Shadle/xwin/releases/latest'
+    $XwinVersion = $xwinLatest.tag_name
+    $XwinAsset = ($xwinLatest.assets | Where-Object {
+        $_.name -match 'x86_64-pc-windows-msvc\.tar\.gz$'
+    } | Select-Object -First 1).name
+    $XwinUrl = ($xwinLatest.assets | Where-Object {
+        $_.name -eq $XwinAsset
+    } | Select-Object -First 1).browser_download_url
+    if (-not $XwinUrl) { throw 'No Windows MSVC tar.gz asset found' }
+    Write-Host "  xwin $XwinVersion => $XwinAsset"
+}
+catch {
+    throw "Failed to discover xwin latest release: $_"
+}
 
 function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
@@ -249,7 +265,8 @@ Write-Step 'Extracting Windows SDK via xwin'
 $xwinTmp = Join-Path $CacheDir 'extract-xwin'
 if (Test-Path $xwinTmp) { Remove-Item -Recurse -Force $xwinTmp }
 New-Item -ItemType Directory -Force -Path $xwinTmp | Out-Null
-Expand-Archive -LiteralPath $xwinDest -DestinationPath $xwinTmp -Force
+& tar -xzf $xwinDest -C $xwinTmp
+if ($LASTEXITCODE -ne 0) { throw "tar failed to extract xwin archive (exit code $LASTEXITCODE)" }
 $xwinExe = Get-ChildItem -Recurse -Filter 'xwin.exe' $xwinTmp | Select-Object -First 1
 if (-not $xwinExe) { throw "xwin.exe not found in archive" }
 
