@@ -1,0 +1,213 @@
+;
+; win-env - Rust MSVC one-click installer for Windows x64
+;
+; Compiled by builders/rust/build.ps1 via ISCC.exe with these defines:
+;   /DMyAppVersion=<x.y.z>
+;   /DStageDir=<staged binary tree>
+;   /DOutputDir=<output folder>
+;   /DOutputBaseFilename=<setup exe base name>
+;
+#ifndef MyAppVersion
+  #error MyAppVersion must be defined, e.g. /DMyAppVersion=1.90.0
+#endif
+#ifndef StageDir
+  #error StageDir must be defined
+#endif
+#ifndef OutputDir
+  #define OutputDir "output"
+#endif
+#ifndef OutputBaseFilename
+  #define OutputBaseFilename "rust-setup-x64"
+#endif
+#ifndef SdkUcrtPath
+  #define SdkUcrtPath "lib\\ucrt\\x86_64"
+#endif
+#ifndef SdkUmPath
+  #define SdkUmPath "lib\\um\\x86_64"
+#endif
+
+[Setup]
+AppId={{7E3B9A2D-4C5F-4E8A-B1D6-9F0A3C7E2B51}
+AppName=Rust (MSVC)
+AppVersion={#MyAppVersion}
+AppVerName=Rust {#MyAppVersion} MSVC (x64)
+AppPublisher=win-env
+AppComments=Rust MSVC one-click installer, packaged by win-env
+DefaultDirName=C:\pf\rust
+DisableProgramGroupPage=yes
+PrivilegesRequired=admin
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+Compression=lzma2/max
+LZMADictionarySize=262144
+SolidCompression=yes
+WizardStyle=modern
+SetupIconFile=setup.ico
+UninstallDisplayIcon={app}\bin\rustc.exe
+UninstallDisplayName=Rust {#MyAppVersion} MSVC (x64, win-env)
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany=win-env
+VersionInfoDescription=Rust MSVC (x64) one-click installer
+OutputDir={#OutputDir}
+OutputBaseFilename={#OutputBaseFilename}
+
+#define LangDir SourcePath + "Languages\"
+
+[Languages]
+Name: "chinesesimp"; MessagesFile: "{#LangDir}ChineseSimplified.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Files]
+Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+
+[Code]
+const
+  EnvRegKey = 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment';
+  HWND_BROADCAST_MSG = $FFFF;
+  WM_SETTINGCHANGE = $001A;
+  SMTO_ABORTIFHUNG = $0002;
+
+var
+  EnvMsgResult: DWORD;
+
+procedure SendMessageTimeout(hWnd: Integer; Msg: Integer; wParam: Integer;
+  lParam: String; fuFlags: Integer; uTimeout: Integer; var lpdwResult: DWORD);
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
+procedure BroadcastEnvironmentChange;
+begin
+  SendMessageTimeout(HWND_BROADCAST_MSG, WM_SETTINGCHANGE, 0,
+    'Environment', SMTO_ABORTIFHUNG, 5000, EnvMsgResult);
+end;
+
+function NormalizePathEntry(const P: String): String;
+begin
+  Result := LowerCase(Trim(P));
+  StringChangeEx(Result, '/', '\', True);
+  while (Length(Result) > 3) and (Result[Length(Result)] = '\') do
+    Delete(Result, Length(Result), 1);
+end;
+
+procedure UpdateSystemPath(const Dir: String; OnInstall: Boolean);
+var
+  OldPath, Part, Rebuilt, Target: String;
+  List: TStringList;
+  I: Integer;
+  Present, Changed: Boolean;
+begin
+  Target := NormalizePathEntry(Dir);
+  if Target = '' then
+    exit;
+
+  if not RegQueryStringValue(HKLM, EnvRegKey, 'Path', OldPath) then
+  begin
+    Log('System PATH could not be read, skipping PATH update');
+    exit;
+  end;
+
+  List := TStringList.Create;
+  try
+    List.StrictDelimiter := True;
+    List.Delimiter := ';';
+    List.DelimitedText := OldPath;
+
+    Present := False;
+    Changed := False;
+    Rebuilt := '';
+    for I := 0 to List.Count - 1 do
+    begin
+      Part := Trim(List[I]);
+      if Part = '' then
+      begin
+        Changed := True;
+        Continue;
+      end;
+      if NormalizePathEntry(Part) = Target then
+      begin
+        Present := True;
+        if not OnInstall then
+        begin
+          Changed := True;
+          Continue;
+        end;
+      end;
+      if Rebuilt <> '' then
+        Rebuilt := Rebuilt + ';';
+      Rebuilt := Rebuilt + Part;
+    end;
+
+    if OnInstall and not Present then
+    begin
+      if Rebuilt <> '' then
+        Rebuilt := Rebuilt + ';';
+      Rebuilt := Rebuilt + Trim(Dir);
+      Changed := True;
+    end;
+
+    if Changed then
+    begin
+      if RegWriteExpandStringValue(HKLM, EnvRegKey, 'Path', Rebuilt) then
+      begin
+        Log('System PATH updated');
+        BroadcastEnvironmentChange;
+      end
+      else
+        Log('Failed to write system PATH');
+    end
+    else
+      Log('System PATH already up to date');
+  finally
+    List.Free;
+  end;
+end;
+
+// Replace __APP_DIR__ placeholder in cargo config with actual install path.
+procedure PatchCargoConfig;
+var
+  ConfigPath, Content, AppDir: String;
+  Success: Boolean;
+begin
+  ConfigPath := ExpandConstant('{userappdata}\.cargo\config.toml');
+  AppDir := ExpandConstant('{app}');
+  // Normalize to backslashes for TOML string
+  StringChangeEx(AppDir, '/', '\', True);
+
+  if not FileExists(ConfigPath) then
+  begin
+    // Create directory and file if missing
+    if not DirExists(ExtractFileDir(ConfigPath)) then
+      CreateDir(ExtractFileDir(ConfigPath));
+    Content := '[target.x86_64-pc-windows-msvc]' + #13#10 +
+               'linker = "lld-link"' + #13#10 +
+               'rustflags = [' + #13#10 +
+               '    "-L", "' + AppDir + '\\sdk\\' + '{#SdkUcrtPath}' + '",' + #13#10 +
+               '    "-L", "' + AppDir + '\\sdk\\' + '{#SdkUmPath}' + '"' + #13#10 +
+               ']' + #13#10;
+    Success := SaveStringToFile(ConfigPath, Content, False);
+    if Success then
+      Log('Cargo config created at ' + ConfigPath)
+    else
+      Log('Failed to create cargo config');
+  end
+  else
+  begin
+    // File exists: append our target section if not already present
+    // For simplicity in this POC, we overwrite. Production should merge.
+    Log('Cargo config exists, leaving untouched (user may have custom config)');
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    UpdateSystemPath(ExpandConstant('{app}\bin'), True);
+    PatchCargoConfig;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    UpdateSystemPath(ExpandConstant('{app}\bin'), False);
+end;
