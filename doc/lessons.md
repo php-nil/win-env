@@ -152,3 +152,10 @@ if ($code -ne 0) { throw ... }
 * **根因**：vc_redist 是 WiX **Burn** 引导包（不是自解压压缩包），7-Zip 不支持该格式；`/layout` 因 exe 清单要求管理员权限，提权后 Burn 引擎固定写 `C:\Windows\Temp\{GUID}`（忽略 TEMP 重定向），受限沙箱/CI 外部环境下直接失败。
 * **规则**：离线解包链——WiX 3.14 官方 `wix314-binaries.zip` 中的 `dark.exe -nologo -x <dir> vc_redist.x64.exe` 解出载荷（`AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi` + cab1.cab），再 `msiexec /a <msi> /qn TARGETDIR=<dir>` 管理安装提取，DLL 落在 `<dir>\System64\`。全程无需提权、不写系统目录，本地沙箱与 GitHub runner 行为一致。核心 CRT 7 DLL 均在 Minimum 包内（vcruntime140(+_1)、msvcp140(+_1/_2/_atomic_wait/_codecvt_ids)），concrt/vccorlib/vcamp/vcomp/vcruntime140_threads 按需另行评估。
 * **别忘**：`msiexec` 是异步进程，PowerShell 里用 `Start-Process -Wait -PassThru` 拿退出码，直调 `&` 可能提前返回。
+
+## 10. xwin splat 是 move（rename）语义，cache/unpack/output 必须同盘
+
+* **现象**：CI 上 `xwin --temp splat --output D:\...\stage\rust\sdk` 报 `failed to move ...\unpack\... to \\?\D:\...`，`os error 17`（The system cannot move the file to a different disk drive）。
+* **根因**：splat 默认把文件从解压目录**移动**到输出目录；`--temp` 固定把解压目录放 `%TEMP%`（runner 上是 C 盘），与 D 盘的 output 跨盘，Windows rename 不支持跨盘。
+* **规则**：用 `--cache-dir <build>\cache\xwin` 而不是 `--temp`——cache、unpack、output 同盘时 move 是零成本 rename；`build\cache` 本来就 gitignore，不污染 repo，重跑还能复用已下载的包。凡"解压/暂存 → move 到目标"类工具（xwin、robocopy /MOV 等）都要先确认两侧在同一卷。
+* **旁证**：xwin 在 Windows 上的 symlink 处理是空操作（`#[cfg(windows)] fn symlink -> Ok(())`），无需 `--disable-symlinks`；`splat` 子命令自动串联 download+unpack，无需分步执行。

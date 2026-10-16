@@ -283,10 +283,15 @@ $sdkDir = Join-Path $StageDir 'sdk'
 New-Item -ItemType Directory -Force -Path $sdkDir | Out-Null
 # xwin CLI confirmed against 0.10.0 source: --accept-license is a global arg,
 # `splat` is a subcommand with --output; splat auto-runs download + unpack.
-# --temp makes xwin use a scratch dir and delete it on exit (CI: no cache reuse
-# anyway, avoids leaving ~1-2 GB .xwin-cache in the repo working directory).
+# Cache/unpack/output MUST live on the same drive: splat moves files (rename)
+# from the unpack dir to the output dir, and a cross-drive move fails with
+# os error 17. Pointing --cache-dir at build\cache keeps everything on the
+# same drive as the stage tree, stays inside the gitignored build dir, and
+# survives re-runs (downloaded packages are reused). Do NOT use --temp: it
+# unpacks to %TEMP% (C: drive on runners) and the move to D: fails.
 # Windows symlink creation is a no-op in xwin, so no admin/developer-mode risk.
-& $xwinExe.FullName --accept-license --temp splat --output $sdkDir
+$xwinCache = Join-Path $CacheDir 'xwin'
+& $xwinExe.FullName --accept-license --cache-dir $xwinCache splat --output $sdkDir
 if ($LASTEXITCODE -ne 0) { throw "xwin SDK extraction failed with exit code $LASTEXITCODE" }
 Remove-Item -Recurse -Force $xwinTmp
 
