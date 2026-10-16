@@ -166,3 +166,17 @@ if ($code -ne 0) { throw ... }
 * **根因**：cargo 把全部人读进度（`Creating binary`、`Compiling`、`Finished`）写到 **stderr**。PowerShell 5.1 在 `$ErrorActionPreference='Stop'` 下，一旦原生命令的 stderr 被 `2>&1` 重定向进管道，就会把**第一行 stderr** 当成终止性 `NativeCommandError` 抛出——与命令真实退出码无关，命令其实成功了。
 * **规则**：凡需要 `2>&1` 收集原生命令（cargo/rustc/clang/npm 等）输出，调用前后必须临时切 `$ErrorActionPreference='Continue'` 并在 `finally` 还原（本仓库 build.ps1 的两处 `--version` 检查与 cargo build 冒烟块都照此处理）。或者干脆**不重定向**，让 stderr 直接进主机（不重定向就不会触发该错误），只靠 `$LASTEXITCODE` 判成败。
 * **判定诀窍**：报错文本是命令行自身的正常输出、且 `FullyQualifiedErrorId` 为 `NativeCommandError` 时，几乎都是这个坑，而非命令真的失败。
+
+## 12. Rust dist 组件 tarball 内层目录名不一致（rust-std 带 target 后缀）
+
+* **现象**：`cargo build` 报 `error[E0463]: can't find crate for 'std'` 并提示 `rustup target add x86_64-pc-windows-msvc`，但 rust-std 组件其实已下载并合并进暂存树。
+* **根因**：`rustc-<ver>-<host>.tar.gz` 的内层载荷目录名等于组件名（`rustc/`、`cargo/`），但 `rust-std-<ver>-<host>.tar.gz` 的内层目录是 **target 后缀名** `rust-std-<target>/`。按 `Join-Path <versionDir> 'rust-std'` 取会落空；一旦 fallback 成"整个版本目录"，载荷就被多套一层，std 落到 `<stage>\rust-std-<target>\lib\rustlib\<target>\lib`。而 rustc 的 sysroot 是 `bin\` 的父目录，期望在 `<stage>\lib\rustlib\<target>\lib`，于是找不到 std。
+* **规则**：解 Rust dist 组件 tar 包后，载荷目录一律按"版本目录下唯一的子目录"通用取（优先匹配 `组件名` 或 `组件名-*`），不要假设内层目录名恒等于组件名。合并后立即断言 `lib\rustlib\<target>\lib` 存在，把 E0463 提前成明确报错。
+
+## 13. 本地用便携 ISCC 预编译 setup.iss，一次抓完所有只在编译期暴露的错误
+
+* **现象**：Rust 安装器 `setup.iss` 的错误只在 ISCC 编译期出现，且**串行**——修完一个才看得见下一个：先 `Error on line 176: 'BEGIN' expected`，改完又变成 `lzma: Finish: LZMA_Encode failed with code 5`。
+* **根因（两个已验证的坑）**：
+  1. **Pascal Script 不允许过程内的局部 `const` 块**（`procedure X; const ...; var ...;`）。`const` 只能放 `[Code]` 顶层全局 const 段，过程里只能有 `var`。把 `const` 写在过程里会报 `'BEGIN' expected`。
+  2. `LZMADictionarySize` 超过 ISCC 实际可分配的字典上限时，报的是 `LZMA_Encode failed with code 5`，而不是清晰的"参数超范围"。实测本机便携 ISCC：`131072`（128 MB）通过，`163840`（160 MB）及以上全部失败——**可用上限即 128 MB**（与 PHP 包取值一致）。Rust 原本写的 `262144`（256 MB）必然编译失败。
+* **规则**：改 `setup.iss` 后先本地预编译一遍（秒级，见 §5.2 便携 ISCC），造一个**极小的假暂存树**当 `StageDir`，带上 `MyAppVersion` 等 define 直接跑 ISCC，把 Pascal / 压缩类错误一次性抓完，再推 CI。另：TOML/配置里含连续单引号的字面量不要手数引号，定义全局常量 `Q = ''''`（一个单引号字符）再拼接，可证明引号平衡。

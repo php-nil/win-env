@@ -223,11 +223,18 @@ foreach ($comp in $components) {
     # paths like StageDir\rustc\bin\rustc.exe instead of StageDir\bin\rustc.exe.
     $versionDir = Get-ChildItem -Directory $tmpDir | Select-Object -First 1
     if (-not $versionDir) { throw "No inner directory in $($comp.Name) archive" }
-    $compDir = Join-Path $versionDir.FullName $comp.Name
-    if (-not (Test-Path $compDir)) {
-        # Some archives may flatten directly; fallback: use versionDir contents.
-        $compDir = $versionDir.FullName
+    # The payload lives in ONE subdirectory of the version dir. Its name equals
+    # the component name for rustc/cargo, but is target-suffixed for rust-std
+    # (rust-std-x86_64-pc-windows-msvc). Pick it generically: merging the version
+    # dir itself nests the payload one level too deep, and rustc then cannot
+    # find std (error E0463: can't find crate for `std`).
+    $innerDir = Get-ChildItem -Directory $versionDir.FullName |
+        Where-Object { $_.Name -eq $comp.Name -or $_.Name -like "$($comp.Name)-*" } |
+        Select-Object -First 1
+    if (-not $innerDir) {
+        $innerDir = Get-ChildItem -Directory $versionDir.FullName | Select-Object -First 1
     }
+    $compDir = if ($innerDir) { $innerDir.FullName } else { $versionDir.FullName }
     Write-Host "  merging from: $compDir"
     # First component mirrors (to clear stage), subsequent components overlay.
     $rcMode = if ($comp.Name -eq 'rustc') { '/MIR' } else { '/E' }
@@ -242,6 +249,15 @@ $rustcExe = Join-Path $StageDir 'bin\rustc.exe'
 $cargoExe = Join-Path $StageDir 'bin\cargo.exe'
 if (-not (Test-Path $rustcExe)) { throw "rustc.exe missing after merge" }
 if (-not (Test-Path $cargoExe)) { throw "cargo.exe missing after merge" }
+# Fail fast if rust-std landed at the wrong level. rustc's sysroot is the parent
+# of bin\, so std must sit at lib\rustlib\<target>\lib. Checking here turns a
+# cryptic `E0463: can't find crate for std` at cargo-build time into a clear error.
+$stdLibDir = Join-Path $StageDir "lib\rustlib\$Target\lib"
+if (-not (Test-Path $stdLibDir)) {
+    $tree = (Get-ChildItem -Recurse -Depth 2 $StageDir -Directory | Select-Object -First 30 |
+        ForEach-Object { $_.FullName.Replace($StageDir, '') }) -join "`n"
+    throw "rust-std not staged at $stdLibDir - merge produced wrong layout. Dirs under stage:`n$tree"
+}
 
 # ---------------------------------------------------------------------------
 # 4. Extract lld-link.exe from LLVM

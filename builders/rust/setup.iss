@@ -46,7 +46,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/max
-LZMADictionarySize=262144
+LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern
 SetupIconFile=setup.ico
@@ -73,6 +73,12 @@ const
   HWND_BROADCAST_MSG = $FFFF;
   WM_SETTINGCHANGE = $001A;
   SMTO_ABORTIFHUNG = $0002;
+  // Pascal Script does NOT allow a local `const` block inside a procedure,
+  // so this shared literal lives in the global const section.
+  CargoSectionHeader = '[target.x86_64-pc-windows-msvc]';
+  // A single-quote character. Building TOML literal strings with Q avoids
+  // fragile runs of quotes that are hard to keep balanced by hand.
+  Q = '''';
 
 var
   EnvMsgResult: DWORD;
@@ -173,8 +179,6 @@ end;
 // Merge strategy: if file exists and already has our target section, replace it
 // (preserving all other sections / user settings). Otherwise append or create.
 procedure PatchCargoConfig;
-const
-  SectionHeader = '[target.x86_64-pc-windows-msvc]';
 var
   ConfigPath, Content, AppDir, NewSection, SdkVc: String;
   SectionStart, SectionEnd: Integer;
@@ -192,14 +196,14 @@ begin
   // ({app}); SdkVcPath may be empty if the VC lib dir was not found.
   SdkVc := '{#SdkVcPath}';
 
-  NewSection := SectionHeader + #13#10 +
+  NewSection := CargoSectionHeader + #13#10 +
                 'linker = "lld-link"' + #13#10 +
                 'rustflags = [' + #13#10 +
-                '    ''-L'', ''' + AppDir + '\' + '{#SdkUcrtPath}' + ''',' + #13#10 +
-                '    ''-L'', ''' + AppDir + '\' + '{#SdkUmPath}'''';
+                '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUcrtPath}' + Q + ',' + #13#10 +
+                '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUmPath}' + Q + #13#10;
   if SdkVc <> '' then
     NewSection := NewSection + ',' + #13#10 +
-                  '    ''-L'', ''' + AppDir + '\' + SdkVc + '''';
+                  '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + SdkVc + Q + #13#10;
   NewSection := NewSection + #13#10 +
                 ']' + #13#10;
 
@@ -222,7 +226,7 @@ begin
   SectionEnd   := -1;
   for I := 0 to GetArrayLength(Lines) - 1 do
   begin
-    if Trim(Lines[I]) = SectionHeader then
+    if Trim(Lines[I]) = CargoSectionHeader then
     begin
       SectionStart := I;
       // Find end: next line starting with '[' (or EOF)

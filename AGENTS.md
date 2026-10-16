@@ -87,9 +87,9 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-16 | Rust 安装器 `setup.iss` 修复三个只在 ISCC 编译期暴露的错误：过程内局部 `const` 改为全局 const、rustflags 字面量改用全局 `Q` 常量拼接、`LZMADictionarySize` 由 262144 降至 131072（128 MB 为实测可用上限） |
 | 2026-10-16 | PHP 包调整 php.ini 默认值：`apc.enable_cli=0`（CLI 下 APCu 默认不生效）、`date.timezone = Asia/Shanghai`；移除 Xdebug/APCu/Composer 版本选项（workflow 与 build.ps1 参数），一律取官方最新可用版本；冒烟测试同步校验时区与 APCu 行为 |
 | 2026-10-16 | 新增 Rust MSVC 一键打包链路（stable channel 自动发现版本，默认 `C:\pf\rust`；内置 LLD 链接器 + xwin 提取的 Windows SDK/CRT，免 Visual Studio；构建含真实 `cargo new` + `cargo build --release` 冒烟测试；安装器写 `%USERPROFILE%\.cargo\config.toml` 并做段级合并） |
 | 2026-10-16 | PHP 包新增 APCu（官方 PECL `php_apcu.dll`，放入 `ext\`）并在 php.ini 中默认开启（`apc.enabled=1`、`apc.enable_cli=1`、`apc.shm_size=32M`）；workflow 新增 `apcu_version` 输入，冒烟测试增加 APCu 校验 |
 | 2026-10-14 | 新增 Node.js LTS 一键打包链路（官方 dist 索引自动发现最新 LTS，默认 `C:\pf\node`，PATH 必加；安装包 25.44 MiB） |
 | 2026-10-14 | 全部安装包 exe 图标改为对应软件官方图标（`SetupIconFile` + `builders/<name>/setup.ico`；php/pwsh/git 提取自官方二进制，pnpm 取自官方 GitHub 组织头像） |
-| 2026-10-14 | 新增 PowerShell 7 v7.6.x 一键打包链路（官方 win-x64 zip，默认 `C:\pf\PowerShell7`，PATH 必加 + 右键菜单「在此处打开 PowerShell 7」+ Windows Terminal fragment 配置档） |
