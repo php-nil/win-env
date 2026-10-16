@@ -281,15 +281,26 @@ if (-not $xwinExe) { throw "xwin.exe not found in archive" }
 
 $sdkDir = Join-Path $StageDir 'sdk'
 New-Item -ItemType Directory -Force -Path $sdkDir | Out-Null
-& $xwinExe.FullName --accept-license splat --output $sdkDir
+# xwin CLI confirmed against 0.10.0 source: --accept-license is a global arg,
+# `splat` is a subcommand with --output; splat auto-runs download + unpack.
+# --temp makes xwin use a scratch dir and delete it on exit (CI: no cache reuse
+# anyway, avoids leaving ~1-2 GB .xwin-cache in the repo working directory).
+# Windows symlink creation is a no-op in xwin, so no admin/developer-mode risk.
+& $xwinExe.FullName --accept-license --temp splat --output $sdkDir
 if ($LASTEXITCODE -ne 0) { throw "xwin SDK extraction failed with exit code $LASTEXITCODE" }
 Remove-Item -Recurse -Force $xwinTmp
 
-# Verify SDK structure (xwin splat output may vary by version)
-$sdkHasInclude = Test-Path (Join-Path $sdkDir 'include')
-$sdkHasLib     = Test-Path (Join-Path $sdkDir 'lib')
-if (-not $sdkHasInclude -and -not $sdkHasLib) {
-    $tree = (Get-ChildItem -Recurse -Depth 2 $sdkDir | Select-Object -First 30 | ForEach-Object { $_.FullName.Replace($sdkDir, '') }) -join "`n"
+# Verify SDK structure. Layout confirmed from xwin 0.10.0 splat source:
+#   <out>\crt\include\                VC/STL headers
+#   <out>\crt\lib\<arch>\             VC CRT libs (msvcrt.lib, vcruntime.lib)
+#   <out>\sdk\include\{um,shared}\    Windows SDK headers
+#   <out>\sdk\include\ucrt\           UCRT headers
+#   <out>\sdk\lib\um\<arch>\          Windows SDK import libs (kernel32.lib)
+#   <out>\sdk\lib\ucrt\<arch>\        UCRT import libs (ucrt.lib)
+$hasCrt = Test-Path (Join-Path $sdkDir 'crt')
+$hasSdk = Test-Path (Join-Path $sdkDir 'sdk')
+if (-not ($hasCrt -and $hasSdk)) {
+    $tree = (Get-ChildItem -Recurse -Depth 2 $sdkDir | Select-Object -First 40 | ForEach-Object { $_.FullName.Replace($sdkDir, '') }) -join "`n"
     throw "xwin output structure unexpected. Top-level entries:`n$tree"
 }
 
@@ -319,33 +330,36 @@ Write-Host "  $cargoOut"
 Write-Host "  lld-link $lldOut"
 
 # ---------------------------------------------------------------------------
-# 6b. Detect SDK library paths for cargo config
-#     xwin splat output typically has three lib directories:
-#       lib\ucrt\x86_64 — UCRT import libs (Windows Runtime C)
-#       lib\um\x86_64   — Windows SDK import libs (user-mode APIs like kernel32)
-#       lib\vc\x86_64   — VC++ runtime libs (vcruntime.lib, libcmt.lib) — NEEDED
-#     Without the `vc` path, lld-link fails with unresolved symbols like
-#     `__CxxFrameHandler3` (defined in vcruntime.lib).
+# 6b. Locate SDK library paths (relative to install root = StageDir).
+#     All three lib dirs are required for linking: rustc std for
+#     x86_64-pc-windows-msvc needs msvcrt/vcruntime (crt), ucrt (sdk\lib\ucrt)
+#     and kernel32/ws2_32/bcrypt (sdk\lib\um). Missing vc dir means lld-link
+#     fails with unresolved symbols like __CxxFrameHandler3.
 # ---------------------------------------------------------------------------
-function Find-SdkLib([string]$pattern) {
-    return (Get-ChildItem -Directory -Recurse -Depth 3 -Filter 'x86_64' $sdkDir |
-        Where-Object { $_.FullName -match $pattern } | Select-Object -First 1)
+function Find-SdkLibDir([string]$directRel, [string]$fallbackRe) {
+    $direct = Join-Path $sdkDir $directRel
+    if (Test-Path $direct) { return Get-Item $direct }
+    Write-Host "  '$directRel' not found, falling back to recursive search"
+    return (Get-ChildItem -Directory -Recurse -Filter 'x86_64' $sdkDir |
+        Where-Object { $_.FullName -match $fallbackRe } | Select-Object -First 1)
 }
 
-$ucrtLibDir = Find-SdkLib 'ucrt'
-$umLibDir   = Find-SdkLib '\\um\\'
-$vcLibDir   = Find-SdkLib '\\vc\\'
+$vcLibDir   = Find-SdkLibDir 'crt\lib\x86_64'      '\\crt\\lib\\x86_64$'
+$ucrtLibDir = Find-SdkLibDir 'sdk\lib\ucrt\x86_64' '\\lib\\ucrt\\x86_64$'
+$umLibDir   = Find-SdkLibDir 'sdk\lib\um\x86_64'   '\\lib\\um\\x86_64$'
 
-if (-not $ucrtLibDir) { throw 'Could not locate ucrt\x86_64 under sdk\ — xwin output may be malformed' }
-if (-not $umLibDir)   { throw 'Could not locate um\x86_64 under sdk\ — xwin output may be malformed' }
-if (-not $vcLibDir)   { Write-Warning 'Could not locate vc\x86_64 under sdk\ — linking may fail for targets needing vcruntime' }
+if (-not $ucrtLibDir) { throw 'Could not locate ucrt\x86_64 lib dir under sdk\ — xwin output may be malformed' }
+if (-not $umLibDir)   { throw 'Could not locate um\x86_64 lib dir under sdk\ — xwin output may be malformed' }
+if (-not $vcLibDir)   { throw 'Could not locate VC runtime lib dir (crt\lib\x86_64) — linking fails without vcruntime.lib' }
 
-$ucrtRel = $ucrtLibDir.FullName.Replace($sdkDir, '').TrimStart('\')
-$umRel   = $umLibDir.FullName.Replace($sdkDir, '').TrimStart('\')
-$vcRel   = if ($vcLibDir) { $vcLibDir.FullName.Replace($sdkDir, '').TrimStart('\') } else { '' }
+# Relative paths from StageDir (= install root); consumed by the smoke config,
+# the staged template and the ISCC defines passed to setup.iss.
+$ucrtRel = $ucrtLibDir.FullName.Substring($StageDir.Length).TrimStart('\')
+$umRel   = $umLibDir.FullName.Substring($StageDir.Length).TrimStart('\')
+$vcRel   = $vcLibDir.FullName.Substring($StageDir.Length).TrimStart('\')
 Write-Host "  SDK ucrt lib : $ucrtRel"
 Write-Host "  SDK um lib   : $umRel"
-Write-Host "  SDK vc lib   : $(if ($vcRel) { $vcRel } else { '(not found)' })"
+Write-Host "  SDK vc lib   : $vcRel"
 
 # ---------------------------------------------------------------------------
 # 6c. Smoke test: real cargo build (mandatory — proves SDK + LLD + rustc
@@ -358,9 +372,12 @@ $smokeProj   = Join-Path $smokeTmp 'helloworld'
 if (Test-Path $smokeTmp) { Remove-Item -Recurse -Force $smokeTmp }
 New-Item -ItemType Directory -Force -Path $smokeCargo | Out-Null
 
-# Build rustflags entries: always ucrt + um, optionally vc runtime.
-$rustflagsLines = (@("    '-L', '$sdkDir\$ucrtRel'", "    '-L', '$sdkDir\$umRel'"))
-if ($vcRel) { $rustflagsLines += "    '-L', '$sdkDir\$vcRel'" }
+# Build rustflags entries: ucrt + um + vc, all relative to StageDir.
+$rustflagsLines = @(
+    "    '-L', '$StageDir\$ucrtRel'",
+    "    '-L', '$StageDir\$umRel'",
+    "    '-L', '$StageDir\$vcRel'"
+)
 $rustflagsToml = ($rustflagsLines -join ",`n")
 
 # Write a temporary cargo config that points to lld-link + SDK libs.
@@ -424,8 +441,11 @@ finally {
 # We stage a template with __APP_DIR__ placeholder for reference / manual use.
 $cargoConfigDir = Join-Path $StageDir '.cargo'
 New-Item -ItemType Directory -Force -Path $cargoConfigDir | Out-Null
-$templateLines = @("    '-L', '__APP_DIR__\sdk\$ucrtRel'", "    '-L', '__APP_DIR__\sdk\$umRel'")
-if ($vcRel) { $templateLines += "    '-L', '__APP_DIR__\sdk\$vcRel'" }
+$templateLines = @(
+    "    '-L', '__APP_DIR__\$ucrtRel'",
+    "    '-L', '__APP_DIR__\$umRel'",
+    "    '-L', '__APP_DIR__\$vcRel'"
+)
 $cargoConfig = @"
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"

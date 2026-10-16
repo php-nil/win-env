@@ -19,15 +19,18 @@
 #ifndef OutputBaseFilename
   #define OutputBaseFilename "rust-setup-x64"
 #endif
+; SDK lib paths relative to the install root (verified against xwin 0.10.0
+; splat layout: crt\lib\<arch> = VC CRT, sdk\lib\ucrt\<arch> = UCRT,
+; sdk\lib\um\<arch> = Windows SDK).
 #ifndef SdkUcrtPath
-  #define SdkUcrtPath "lib\\ucrt\\x86_64"
+  #define SdkUcrtPath "sdk\\lib\\ucrt\\x86_64"
 #endif
 #ifndef SdkUmPath
-  #define SdkUmPath "lib\\um\\x86_64"
+  #define SdkUmPath "sdk\\lib\\um\\x86_64"
 #endif
-// SdkVcPath may be empty if xwin didn't produce a vc runtime directory.
+// SdkVcPath may be empty if the VC runtime lib dir was not found.
 #ifndef SdkVcPath
-  #define SdkVcPath ""
+  #define SdkVcPath "crt\\lib\\x86_64"
 #endif
 
 [Setup]
@@ -185,18 +188,18 @@ begin
 
   // Build the new section we want to write.
   // TOML literal strings (single quotes) → Windows backslashes need zero escaping.
-  // SDK paths are passed in via ISCC defines; SdkVcPath may be empty if xwin
-  // didn't produce a VC runtime directory.
+  // SDK paths arrive via ISCC defines already relative to the install root
+  // ({app}); SdkVcPath may be empty if the VC lib dir was not found.
   SdkVc := '{#SdkVcPath}';
 
   NewSection := SectionHeader + #13#10 +
                 'linker = "lld-link"' + #13#10 +
                 'rustflags = [' + #13#10 +
-                '    ''-L'', ''' + AppDir + '\sdk\' + '{#SdkUcrtPath}' + ''',' + #13#10 +
-                '    ''-L'', ''' + AppDir + '\sdk\' + '{#SdkUmPath}'''';
+                '    ''-L'', ''' + AppDir + '\' + '{#SdkUcrtPath}' + ''',' + #13#10 +
+                '    ''-L'', ''' + AppDir + '\' + '{#SdkUmPath}'''';
   if SdkVc <> '' then
     NewSection := NewSection + ',' + #13#10 +
-                  '    ''-L'', ''' + AppDir + '\sdk\' + SdkVc + '''';
+                  '    ''-L'', ''' + AppDir + '\' + SdkVc + '''';
   NewSection := NewSection + #13#10 +
                 ']' + #13#10;
 
