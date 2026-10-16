@@ -279,8 +279,10 @@ if ($LASTEXITCODE -ne 0) { throw "tar failed to extract xwin archive (exit code 
 $xwinExe = Get-ChildItem -Recurse -Filter 'xwin.exe' $xwinTmp | Select-Object -First 1
 if (-not $xwinExe) { throw "xwin.exe not found in archive" }
 
-$sdkDir = Join-Path $StageDir 'sdk'
-New-Item -ItemType Directory -Force -Path $sdkDir | Out-Null
+# xwin writes its crt/ and sdk/ trees directly under the install root, so the
+# final layout is {app}\crt\lib\<arch> and {app}\sdk\lib\{ucrt,um}\<arch>.
+# This matches the default lib paths defined in setup.iss exactly.
+$sdkRoot = $StageDir
 # xwin CLI confirmed against 0.10.0 source: --accept-license is a global arg,
 # `splat` is a subcommand with --output; splat auto-runs download + unpack.
 # Cache/unpack/output MUST live on the same drive: splat moves files (rename)
@@ -291,7 +293,7 @@ New-Item -ItemType Directory -Force -Path $sdkDir | Out-Null
 # unpacks to %TEMP% (C: drive on runners) and the move to D: fails.
 # Windows symlink creation is a no-op in xwin, so no admin/developer-mode risk.
 $xwinCache = Join-Path $CacheDir 'xwin'
-& $xwinExe.FullName --accept-license --cache-dir $xwinCache splat --output $sdkDir
+& $xwinExe.FullName --accept-license --cache-dir $xwinCache splat --output $sdkRoot
 if ($LASTEXITCODE -ne 0) { throw "xwin SDK extraction failed with exit code $LASTEXITCODE" }
 Remove-Item -Recurse -Force $xwinTmp
 
@@ -302,10 +304,10 @@ Remove-Item -Recurse -Force $xwinTmp
 #   <out>\sdk\include\ucrt\           UCRT headers
 #   <out>\sdk\lib\um\<arch>\          Windows SDK import libs (kernel32.lib)
 #   <out>\sdk\lib\ucrt\<arch>\        UCRT import libs (ucrt.lib)
-$hasCrt = Test-Path (Join-Path $sdkDir 'crt')
-$hasSdk = Test-Path (Join-Path $sdkDir 'sdk')
+$hasCrt = Test-Path (Join-Path $sdkRoot 'crt')
+$hasSdk = Test-Path (Join-Path $sdkRoot 'sdk')
 if (-not ($hasCrt -and $hasSdk)) {
-    $tree = (Get-ChildItem -Recurse -Depth 2 $sdkDir | Select-Object -First 40 | ForEach-Object { $_.FullName.Replace($sdkDir, '') }) -join "`n"
+    $tree = (Get-ChildItem -Recurse -Depth 2 $sdkRoot | Select-Object -First 40 | ForEach-Object { $_.FullName.Replace($sdkRoot, '') }) -join "`n"
     throw "xwin output structure unexpected. Top-level entries:`n$tree"
 }
 
@@ -342,10 +344,10 @@ Write-Host "  lld-link $lldOut"
 #     fails with unresolved symbols like __CxxFrameHandler3.
 # ---------------------------------------------------------------------------
 function Find-SdkLibDir([string]$directRel, [string]$fallbackRe) {
-    $direct = Join-Path $sdkDir $directRel
+    $direct = Join-Path $sdkRoot $directRel
     if (Test-Path $direct) { return Get-Item $direct }
     Write-Host "  '$directRel' not found, falling back to recursive search"
-    return (Get-ChildItem -Directory -Recurse -Filter 'x86_64' $sdkDir |
+    return (Get-ChildItem -Directory -Recurse -Filter 'x86_64' $sdkRoot |
         Where-Object { $_.FullName -match $fallbackRe } | Select-Object -First 1)
 }
 
@@ -408,6 +410,14 @@ foreach ($var in @('RUSTC', 'RUSTUP_TOOLCHAIN', 'RUSTUP_HOME', 'RUSTUP_INIT_SKIP
 $env:PATH       = "$StageDir\bin;" + $env:PATH
 $env:CARGO_HOME = $smokeCargo
 
+# cargo writes ALL human-readable progress (e.g. "Creating binary ...") to
+# stderr. Piping stderr through `2>&1` while $ErrorActionPreference='Stop' makes
+# PowerShell 5.1 raise a terminating NativeCommandError on the very first
+# stderr line, even when cargo actually succeeded. Switch to 'Continue' for this
+# block, exactly like the rustc/cargo --version checks above do.
+$prevSmokeEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+
 Push-Location $smokeTmp
 try {
     & $cargoExe new --bin --vcs none helloworld 2>&1 | ForEach-Object { Write-Host "  cargo new : $_" }
@@ -426,6 +436,7 @@ try {
 }
 finally {
     Pop-Location
+    $ErrorActionPreference = $prevSmokeEap
     Remove-Item -Recurse -Force $smokeTmp
     # Restore PATH and rustup env vars
     $originalPath = ($env:PATH -split ';' | Where-Object {
