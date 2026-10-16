@@ -33,6 +33,7 @@
 | --- | --- |
 | `php_version` | 留空自动选取 windows.php.net 最新发布的 8.5.x；也可手动指定，如 `8.5.11` |
 | `xdebug_version` | 留空自动从新到旧遍历 PECL 目录，选取第一个提供 PHP 8.5 / NTS / VS17 / x64 构建的版本；也可手动指定，如 `3.5.3` |
+| `apcu_version` | 留空自动从新到旧遍历 PECL 目录，选取第一个提供 PHP 8.5 / NTS / VS17 / x64 构建的版本；也可手动指定，如 `5.1.28` |
 | `nilpack_version` | 内置 `nil` 命令所用 [php-nil/nilpack](https://github.com/php-nil/nilpack) 的 release tag（不带 `v`），默认 `0.2` |
 | `composer_version` | 留空取 getcomposer.org 最新稳定版（精确版本由 `composer.phar --version` 回读）；也可手动指定，如 `2.10.3` |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
@@ -46,6 +47,7 @@
 - 配置文件 `php.ini` 由构建脚本基于官方 `php.ini-development` 生成（不是直接使用原文件）：
   - `extension_dir = "ext"`；
   - 默认开启扩展：curl、fileinfo、exif、gd、intl、mbstring、openssl、**pdo_pgsql**、pdo_sqlite、sodium、sockets、sqlite3、zip；
+  - APCu 默认开启：`extension=apcu`（PECL 扩展，php.ini-development 中无对应行，由构建脚本显式写入），`apc.enabled=1`、`apc.enable_cli=1`、`apc.shm_size=32M`，Web 与 CLI 下 `apcu_*` 函数均可用；
   - 默认不启用 MySQL 相关扩展（mysqli、pdo_mysql 在 php.ini 中被显式注释；需要时取消注释即可，DLL 仍在包内）；
   - `curl.cainfo` / `openssl.cafile` 指向包内 `cacert.pem`；
   - Xdebug 以 `zend_extension=xdebug` 方式从 `ext` 加载，`xdebug.mode=develop,debug,coverage`，监听 `127.0.0.1:9003`。
@@ -64,6 +66,7 @@
 | --- | --- | --- |
 | PHP | <https://windows.php.net/downloads/releases/> | `php-<ver>-nts-Win32-vs17-x64.zip` 整包解压为暂存树 |
 | Xdebug | <https://windows.php.net/downloads/pecl/releases/xdebug/> | `php_xdebug-<ver>-8.5-nts-vs17-x64.zip` 中的 `php_xdebug.dll`，放入 `ext\` |
+| APCu | <https://windows.php.net/downloads/pecl/releases/apcu/> | `php_apcu-<ver>-8.5-nts-vs17-x64.zip` 中的 `php_apcu.dll`，放入 `ext\`，默认开启 |
 | nilpack | <https://github.com/php-nil/nilpack/releases>（v0.2） | `nilpack.phar` 放入安装根目录，配 `nil.bat` 包装器提供 `nil` 命令 |
 | Composer | <https://getcomposer.org>（`composer-stable.phar` 最新稳定版，或 `download/<ver>/composer.phar` 指定版） | `composer.phar` 放入安装根目录，配 `composer.bat` 包装器提供 `composer` 命令 |
 | CA 证书 | <https://curl.se/ca/cacert.pem> | 原样放入安装根目录 `cacert.pem` |
@@ -94,6 +97,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\builders\php\build.ps1 -Ph
 | --- | --- | --- |
 | `-PhpVersion` | 空（自动发现） | 指定 8.5 补丁版本 |
 | `-XdebugVersion` | 空（自动发现） | 指定 Xdebug 版本 |
+| `-ApcuVersion` | 空（自动发现） | 指定 APCu 版本 |
 | `-NilpackVersion` | `0.2` | nilpack release tag（不带 `v`），决定内置 `nil` 命令版本 |
 | `-ComposerVersion` | 空（最新稳定版） | 指定 Composer 版本，如 `2.10.3`；留空时版本由 `composer.phar --version` 回读 |
 | `-BuildDir` | `<repo>\build` | 缓存/暂存/输出目录 |
@@ -113,7 +117,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - **不硬编码补丁版本号**：运行时解析官方目录列表；解析为空立即终止并报错，不猜测 URL。
 - 暂存目录（`build/stage/php`，与其他环境的暂存树隔离）根目录即安装后的 `C:\pf\php-8.5`，安装器只负责原样释放与少量配置改写（占位符替换、PATH）。
 - 下载缓存于 `build/cache`，重复构建不重复下载；下载失败自动重试 3 次。
-- 组装完成有强制冒烟测试：暂存 `php.exe -v` 必须看到 PHP 8.5 与 Xdebug，`php.exe nilpack.phar --version` 必须输出 `Nil Pack Tool`，任一失败即终止，绝不发布坏包。
-- php.ini 扩展处理有三道保险：注释行按需取消注释、`$DisabledExtensions` 强制禁用清单（防止上游把 mysqli/pdo_mysql 改为默认开启）、重复生效行自动注释去重。
+- 组装完成有强制冒烟测试：暂存 `php.exe -v` 必须看到 PHP 8.5 与 Xdebug，`php.exe -r` 必须确认 APCu 已加载且 `apcu_enabled()` 为真，`php.exe nilpack.phar --version` 必须输出 `Nil Pack Tool`，任一失败即终止，绝不发布坏包。
+- php.ini 扩展处理有四道保险：注释行按需取消注释、`$DisabledExtensions` 强制禁用清单（防止上游把 mysqli/pdo_mysql 改为默认开启）、重复生效行自动注释去重，以及 PECL 扩展（APCu）不走 php.ini-development 注释行、由构建脚本直接追加 `extension=apcu` 与 `[apcu]` 配置块（含 `apc.enable_cli=1`，否则 CLI 下 APCu 默认不生效）。
 - VC++ 运行库走 app-local 而非内置 vc_redist 安装器：保持"暂存目录即安装目录 + 安装器只做原样释放"的契约，安装包仅 +0.26 MiB（内置安装器方案约 +24 MiB 且需安装期执行 MSI）。`vc_redist.x64.exe` 与 cacert.pem 同理每次构建重新下载（aka.ms 始终指向最新 14.x，缓存会钉住旧运行库），版本号从 exe 的 FileVersion 读取记入 `build-info.json`；DLL 集覆盖暂存树全部 vcruntime140/msvcp140 导入，OpenMP/AMP/ConcRT/C++/CX 运行库（vcomp140/vcamp140/concrt140/vccorlib140/vcruntime140_threads）经全树导入扫描确认无人引用，不随包。
 - 新增环境（Nginx、Node.js 等）在 `builders/<name>/` 下平行增加构建脚本，并新建对应 workflow；本文档同级新增 `doc/<name>.md`。

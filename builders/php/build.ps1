@@ -3,13 +3,16 @@
     Build the PHP 8.5 one-click installer for Windows (x64, NTS, VS17).
 
 .DESCRIPTION
-    - Resolves the latest PHP 8.5.x / compatible Xdebug release from the
-      official windows.php.net listings (no hardcoded patch versions).
-    - Downloads the official PHP binary zip, Xdebug zip and cacert.pem.
+    - Resolves the latest PHP 8.5.x / compatible Xdebug and APCu releases
+      from the official windows.php.net listings (no hardcoded patch
+      versions).
+    - Downloads the official PHP binary zip, the Xdebug and APCu PECL zips
+      and cacert.pem.
     - Stages a runtime tree: php.ini is generated from php.ini-development,
-      common development extensions are enabled, Xdebug is registered and
-      curl.cainfo / openssl.cafile point at the bundled cacert.pem via the
-      __APP_DIR__ placeholder (replaced by the installer with the real dir).
+      common development extensions are enabled, APCu and Xdebug are
+      registered and curl.cainfo / openssl.cafile point at the bundled
+      cacert.pem via the __APP_DIR__ placeholder (replaced by the installer
+      with the real dir).
     - Compiles an Inno Setup installer which installs to C:\pf\php-8.5
       by default.
 
@@ -18,6 +21,10 @@
 
 .PARAMETER XdebugVersion
     Exact Xdebug version, e.g. 3.5.3. Empty = latest release that ships a
+    PHP 8.5 / NTS / VS17 / x64 build.
+
+.PARAMETER ApcuVersion
+    Exact APCu version, e.g. 5.1.28. Empty = latest release that ships a
     PHP 8.5 / NTS / VS17 / x64 build.
 
 .PARAMETER BuildDir
@@ -38,6 +45,7 @@
 param(
     [string]$PhpVersion = '',
     [string]$XdebugVersion = '',
+    [string]$ApcuVersion = '',
     [string]$BuildDir = '',
     [switch]$SkipCompile,
     [string]$NilpackVersion = '0.2',
@@ -58,6 +66,7 @@ $OutDir    = Join-Path $BuildDir 'output'
 
 $PhpBaseUrl    = 'https://windows.php.net/downloads/releases'
 $XdebugBaseUrl = 'https://windows.php.net/downloads/pecl/releases/xdebug'
+$ApcuBaseUrl   = 'https://windows.php.net/downloads/pecl/releases/apcu'
 $CaCertUrl     = 'https://curl.se/ca/cacert.pem'
 $NilpackUrl    = "https://github.com/php-nil/nilpack/releases/download/v$NilpackVersion/nilpack.phar"
 $VcRedistUrl   = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
@@ -117,6 +126,17 @@ function Test-VersionString([string]$v) {
     return $v -match '^\d+\.\d+\.\d+$'
 }
 
+function Install-ExtensionDll([string]$ZipPath, [string]$DllName, [string]$ExtDir) {
+    # PECL release zips carry the DLL plus docs/PDB; only the DLL is needed.
+    $zip = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    try {
+        $entry = $zip.Entries | Where-Object { $_.FullName -eq $DllName } | Select-Object -First 1
+        if (-not $entry) { throw "$DllName not found inside $ZipPath" }
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (Join-Path $ExtDir $DllName), $true)
+    }
+    finally { $zip.Dispose() }
+}
+
 # ---------------------------------------------------------------------------
 # 1. Resolve versions
 # ---------------------------------------------------------------------------
@@ -169,6 +189,37 @@ else {
 Write-Host "  Xdebug version: $XdebugVersion"
 Write-Host "  Xdebug asset  : $XdebugAsset"
 
+Write-Step 'Resolving APCu release'
+if ($ApcuVersion) {
+    if (-not (Test-VersionString $ApcuVersion)) { throw "Invalid -ApcuVersion: $ApcuVersion" }
+    $apHrefs = Get-LinkHrefs "$ApcuBaseUrl/$ApcuVersion/"
+    $ApcuAsset = $apHrefs |
+        Where-Object { $_ -eq "php_apcu-$ApcuVersion-8.5-nts-vs17-x64.zip" } |
+        Select-Object -First 1
+    if (-not $ApcuAsset) {
+        throw "APCu $ApcuVersion does not provide a PHP 8.5 NTS VS17 x64 build"
+    }
+}
+else {
+    # Walk release directories from newest to oldest until one ships 8.5 NTS.
+    $apcuVersionDirs = Get-LinkHrefs $ApcuBaseUrl |
+        ForEach-Object { if ($_ -match '^(\d+\.\d+\.\d+)/$') { $matches[1] } } |
+        Sort-Object -Unique { [version]$_ } |
+        Sort-Object -Descending { [version]$_ }
+
+    $ApcuAsset = $null
+    foreach ($v in $apcuVersionDirs) {
+        $hrefs = Get-LinkHrefs "$ApcuBaseUrl/$v/"
+        $asset = $hrefs |
+            Where-Object { $_ -eq "php_apcu-$v-8.5-nts-vs17-x64.zip" } |
+            Select-Object -First 1
+        if ($asset) { $ApcuVersion = $v; $ApcuAsset = $asset; break }
+    }
+    if (-not $ApcuAsset) { throw 'Could not resolve an APCu build for PHP 8.5 NTS VS17 x64' }
+}
+Write-Host "  APCu version  : $ApcuVersion"
+Write-Host "  APCu asset    : $ApcuAsset"
+
 # ---------------------------------------------------------------------------
 # 2. Download
 # ---------------------------------------------------------------------------
@@ -183,6 +234,10 @@ Download-File "$PhpBaseUrl/$PhpZipName" $phpZip
 Write-Step 'Downloading Xdebug'
 $xdZip = Join-Path $CacheDir $XdebugAsset
 Download-File "$XdebugBaseUrl/$XdebugVersion/$XdebugAsset" $xdZip
+
+Write-Step 'Downloading APCu'
+$apZip = Join-Path $CacheDir $ApcuAsset
+Download-File "$ApcuBaseUrl/$ApcuVersion/$ApcuAsset" $apZip
 
 Write-Step 'Downloading cacert.pem'
 $caPem = Join-Path $CacheDir 'cacert.pem'
@@ -231,14 +286,10 @@ Write-Step 'Extracting PHP'
 
 Write-Step 'Installing php_xdebug.dll into ext\'
 $extDir = Join-Path $StageDir 'ext'
-$zip = [System.IO.Compression.ZipFile]::OpenRead($xdZip)
-try {
-    $entry = $zip.Entries | Where-Object { $_.FullName -eq 'php_xdebug.dll' } | Select-Object -First 1
-    if (-not $entry) { throw 'php_xdebug.dll not found inside Xdebug archive' }
-    $target = Join-Path $extDir 'php_xdebug.dll'
-    [System.IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $target, $true)
-}
-finally { $zip.Dispose() }
+Install-ExtensionDll -ZipPath $xdZip -DllName 'php_xdebug.dll' -ExtDir $extDir
+
+Write-Step 'Installing php_apcu.dll into ext\'
+Install-ExtensionDll -ZipPath $apZip -DllName 'php_apcu.dll' -ExtDir $extDir
 
 Write-Step 'Installing cacert.pem'
 Copy-Item -Force $caPem (Join-Path $StageDir 'cacert.pem')
@@ -375,6 +426,23 @@ if ($ini -match '(?m)^[ \t]*;?[ \t]*openssl\.cafile[ \t]*=') {
 }
 else { $ini += "`r`nopenssl.cafile = `"$caRel`"`r`n" }
 
+# APCu (bundled PECL extension, enabled by default). Unlike the core
+# extensions above it has no line in php.ini-development, so the entry is
+# added explicitly; apc.enable_cli=1 makes it usable from the CLI too
+# (APCu is off in CLI by default).
+$apcuBlock = @"
+
+; >>> win-env bundled APCu $ApcuVersion >>>
+[PHP]
+extension=apcu
+[apcu]
+apc.enabled=1
+apc.enable_cli=1
+apc.shm_size=32M
+; <<< win-env bundled APCu <<<
+"@
+$ini = $ini.TrimEnd("`r", "`n") + "`r`n" + $apcuBlock
+
 # Xdebug (loaded from extension_dir, so the entry is path-independent)
 $xdebugBlock = @"
 
@@ -402,6 +470,11 @@ if ($LASTEXITCODE -ne 0 -or $phpVerOut -notmatch 'PHP 8\.5') {
     throw "Staged php.exe -v failed: $phpVerOut"
 }
 if ($phpVerOut -notmatch 'Xdebug v') { throw 'Xdebug not loaded in staged runtime' }
+$apcuOut = (& $phpExe -r "echo (function_exists('apcu_enabled') && apcu_enabled()) ? 'APCU-OK' : 'APCU-OFF';" 2>&1) -join "`n"
+if ($LASTEXITCODE -ne 0 -or $apcuOut -notmatch 'APCU-OK') {
+    throw "APCu not enabled in staged runtime: $apcuOut"
+}
+Write-Host "  APCu $ApcuVersion loaded and enabled"
 $nilVerOut = (& $phpExe $nilPhar --version 2>&1) -join "`n"
 if ($LASTEXITCODE -ne 0 -or $nilVerOut -notmatch 'Nil Pack Tool') {
     throw "nilpack.phar smoke test failed: $nilVerOut"
@@ -468,6 +541,9 @@ $buildInfo = [ordered]@{
     xdebugVersion  = $XdebugVersion
     xdebugAsset    = $XdebugAsset
     xdebugUrl      = "$XdebugBaseUrl/$XdebugVersion/$XdebugAsset"
+    apcuVersion    = $ApcuVersion
+    apcuAsset      = $ApcuAsset
+    apcuUrl        = "$ApcuBaseUrl/$ApcuVersion/$ApcuAsset"
     cacertUrl      = $CaCertUrl
     nilpackVersion = $NilpackVersion
     nilpackUrl     = $NilpackUrl
@@ -500,6 +576,7 @@ if (-not $SkipCompile) {
 | --- | --- |
 | PHP | $PhpVersion（NTS / VS17 / x64，windows.php.net 官方包） |
 | Xdebug | $XdebugVersion（ext\php_xdebug.dll，PHP 8.5 NTS VS17 x64） |
+| APCu | $ApcuVersion（ext\php_apcu.dll，PHP 8.5 NTS VS17 x64，默认开启） |
 | nilpack | v$NilpackVersion（nilpack.phar，``nil`` 命令） |
 | Composer | $ComposerVersion（composer.phar，``composer`` 命令，getcomposer.org 官方） |
 | CA 证书 | curl.se 官方 cacert.pem |
@@ -511,6 +588,7 @@ if (-not $SkipCompile) {
 - 安装后自动将安装目录加入系统 PATH，新开命令行可直接使用 ``php`` 与 ``nil`` 命令
 - 配置文件：基于官方 ``php.ini-development`` 生成的 ``php.ini``
 - 默认开启扩展：curl、fileinfo、exif、gd、intl、mbstring、openssl、pdo_pgsql、pdo_sqlite、sodium、sockets、sqlite3、zip
+- APCu：默认开启（``extension=apcu``，``apc.enabled=1``、``apc.enable_cli=1``、``apc.shm_size=32M``），Web 与命令行（``apcu_*`` 函数）均可用
 - 默认不启用 MySQL 相关扩展（mysqli、pdo_mysql，php.ini 中已显式注释，需要时取消注释即可）
 - Xdebug：``zend_extension=xdebug``，``xdebug.mode=develop,debug,coverage``，监听 ``127.0.0.1:9003``
 - ``curl.cainfo`` / ``openssl.cafile`` 指向包内 ``cacert.pem``（安装后按实际目录自动改写）
@@ -532,6 +610,7 @@ SHA-256（$SetupName.exe）：
 if ($env:GITHUB_OUTPUT) {
     "php_version=$PhpVersion"       | Out-File -Encoding ascii -Append $env:GITHUB_OUTPUT
     "xdebug_version=$XdebugVersion" | Out-File -Encoding ascii -Append $env:GITHUB_OUTPUT
+    "apcu_version=$ApcuVersion"     | Out-File -Encoding ascii -Append $env:GITHUB_OUTPUT
     "composer_version=$ComposerVersion" | Out-File -Encoding ascii -Append $env:GITHUB_OUTPUT
     "setup_name=$SetupName.exe"     | Out-File -Encoding ascii -Append $env:GITHUB_OUTPUT
 }

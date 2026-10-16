@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、APCu、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)。
 
 ## 二、仓库结构
 
@@ -25,9 +25,9 @@
 ### 3.1 构建与交付
 
 * **版本不硬编码**：补丁版本运行时从官方目录列表解析；解析为空立即终止报错，不猜测 URL。workflow 保留手动指定版本的输入框。
-* **组件只走官方渠道**（PHP/Xdebug 走 windows.php.net，CA 走 curl.se，nilpack 走其 GitHub Release）；来源写入 `build-info.json` 与发布说明。
+* **组件只走官方渠道**（PHP/Xdebug/APCu 走 windows.php.net，CA 走 curl.se，nilpack 走其 GitHub Release）；来源写入 `build-info.json` 与发布说明。
 * **暂存目录即安装目录**：`build/stage/<env>` 根目录布局等于安装后的 `C:\pf\<env>`（各环境暂存树按目录隔离），安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。
-* **冒烟测试是强制门槛**：组装完成后必须在暂存树上真实执行（当前为 `php -v` 见 Xdebug、`nilpack.phar --version`），失败即 throw，不产出坏包。
+* **冒烟测试是强制门槛**：组装完成后必须在暂存树上真实执行（当前为 `php -v` 见 Xdebug、APCu 加载且 `apcu_enabled()` 为真、`nilpack.phar --version`），失败即 throw，不产出坏包。
 * **产物三件套**：安装包 exe、`*.sha256.txt`、`build-info.json`，外加 `release-notes.md`；全部上传 Release 并保留同名 artifact。
 * **Release 标签**：`<env>-<version>`（如 `php-8.5.11`），同名重跑由 action 就地更新 Release。
 
@@ -44,7 +44,7 @@
 
 * 规格：NTS / VS17 / x64（CLI、IIS/FastCGI、Composer 场景的官方推荐）。
 * `php.ini` 基于官方 `php.ini-development` **生成**而非直接使用；`extension_dir="ext"`。
-* 默认扩展集在 build.ps1 的 `$EnabledExtensions` 单一清单维护（当前默认 pdo_pgsql，不含 mysqli/pdo_mysql）；`$DisabledExtensions` 强制注释禁用项，防止上游默认值变化破坏约定；重复生效行需去重。
+* 默认扩展集在 build.ps1 的 `$EnabledExtensions` 单一清单维护（当前默认 pdo_pgsql，不含 mysqli/pdo_mysql）；`$DisabledExtensions` 强制注释禁用项，防止上游默认值变化破坏约定；重复生效行需去重。PECL 扩展（APCu）在 php.ini-development 中无对应行，由构建脚本直接追加 `extension=apcu` + `[apcu]` 配置块（`apc.enabled=1`、`apc.enable_cli=1`、`apc.shm_size=32M`），默认开启。
 * Xdebug 放 `ext/php_xdebug.dll`，以 `zend_extension=xdebug` 加载；cacert.pem 放安装根目录并配置 `curl.cainfo`/`openssl.cafile`。
 * VC++ 运行库内置（app-local）：构建期从官方 `vc_redist.x64.exe`（dark.exe 解 Burn 包 + `msiexec /a` 解 MSI）提取 7 个 CRT DLL 放安装根目录，目标机器无需预装系统级运行库；版本取 aka.ms 最新并记入 `build-info.json`。
 
@@ -85,10 +85,10 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-16 | PHP 包新增 APCu（官方 PECL `php_apcu.dll`，放入 `ext\`）并在 php.ini 中默认开启（`apc.enabled=1`、`apc.enable_cli=1`、`apc.shm_size=32M`）；workflow 新增 `apcu_version` 输入，冒烟测试增加 APCu 校验 |
 | 2026-10-14 | 新增 Node.js LTS 一键打包链路（官方 dist 索引自动发现最新 LTS，默认 `C:\pf\node`，PATH 必加；安装包 25.44 MiB） |
 | 2026-10-14 | 全部安装包 exe 图标改为对应软件官方图标（`SetupIconFile` + `builders/<name>/setup.ico`；php/pwsh/git 提取自官方二进制，pnpm 取自官方 GitHub 组织头像） |
 | 2026-10-14 | 新增 PowerShell 7 v7.6.x 一键打包链路（官方 win-x64 zip，默认 `C:\pf\PowerShell7`，PATH 必加 + 右键菜单「在此处打开 PowerShell 7」+ Windows Terminal fragment 配置档） |
 | 2026-10-14 | PHP 包新增 `composer` 命令（getcomposer.org 官方 composer.phar + `composer.bat` 包装器；安装包 24.62→25.07 MiB，+0.46 MiB） |
 | 2026-10-14 | PHP 包内置 VC++ 运行库（app-local 7 个 CRT DLL，dark.exe+msiexec 解官方 vc_redist；安装包 24.36→24.62 MiB，+0.26 MiB） |
 | 2026-10-14 | 新增 Git v2.x.windows.y 一键打包链路（PortableGit，自解压 7z，默认 `C:\pf\Git`，PATH 追加 `<安装目录>\cmd`） |
-| 2026-10-14 | 内置 nilpack v0.2 与 `nil` 命令；PATH 由可选改为安装必加 |
