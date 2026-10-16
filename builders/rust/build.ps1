@@ -1,4 +1,4 @@
-﻿﻿<#
+﻿<#
 .SYNOPSIS
     Build the Rust MSVC one-click installer for Windows x64.
 
