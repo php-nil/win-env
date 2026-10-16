@@ -101,8 +101,11 @@ foreach ($line in $lines) {
     $line = $line.Trim()
     if (-not $line) { continue }
 
-    # Track which TOML section we're in (e.g. [pkg.rustc.target.x86_64-pc-windows-msvc])
-    if ($line -match '^\[(.+)\]$') {
+    # Track which TOML section we're in.
+    # Rust's channel TOML uses BOTH [single-bracket tables] and
+    # [[double-bracket array-of-tables]] (for per-target entries).
+    # We match either form and strip ALL bracket chars to get the section path.
+    if ($line -match '^\[+(.+?)\]+$') {
         $currentSection = $Matches[1]
         continue
     }
@@ -117,10 +120,12 @@ foreach ($line in $lines) {
         $rustVersion = $Matches[1]
     }
 
-    # Per-target component URLs from e.g. [pkg.rustc.target.x86_64-pc-windows-msvc]
+    # Per-target component URLs from e.g. [[pkg.rustc.target.x86_64-pc-windows-msvc]]
+    # Extract comp name from $currentSection (NOT $Matches[0]) — the inner URL regex
+    # overwrites $Matches, so $Matches[0] contains the URL line, not the section.
     if ($currentSection -match '^pkg\.(rustc|cargo|rust-std)\.target\.' + [regex]::Escape($Target) + '$' -and
         $line -match '^url\s*=\s*"([^"]+\.tar\.gz)"') {
-        $compName = $Matches[0] -replace '.*pkg\.(\w+)\.target.*', '$1'
+        $compName = ($currentSection -split '\.')[1]    # pkg.<name>.target...
         $targetUrls[$compName] = $Matches[1]
     }
 }
