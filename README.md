@@ -11,6 +11,7 @@
 | Git | v2.x.windows.y · x64 | [GitHub](https://github.com/php-nil/win-env/releases/download/git-2.56.0.windows.2/Git-2.56.0.windows.2-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/git-2.56.0.windows.2/Git-2.56.0.windows.2-setup-x64.exe) |
 | PowerShell 7 | 7.6.x · x64 · 内置右键菜单/WT 配置档 | [GitHub](https://github.com/php-nil/win-env/releases/download/pwsh-7.6.7/pwsh-7.6.7-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/pwsh-7.6.7/pwsh-7.6.7-setup-x64.exe) |
 | Node.js | 24.x LTS · x64 · 内置 npm | [GitHub](https://github.com/php-nil/win-env/releases/download/node-24.21.0/node-24.21.0-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/node-24.21.0/node-24.21.0-setup-x64.exe) |
+| Rust (MSVC) | stable · x64 · x86_64-pc-windows-msvc · 内置 LLD + Windows SDK/CRT（经 xwin 提取） | [GitHub Releases](https://github.com/php-nil/win-env/releases) 待发布 |
 
 > 下载地址为当前最新 Release 的安装包直链（代理走 gh-proxy），新版本发布后版本号同步变化；历史版本见 [Releases](https://github.com/php-nil/win-env/releases)。
 

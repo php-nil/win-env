@@ -1,4 +1,4 @@
-﻿<#
+﻿﻿<#
 .SYNOPSIS
     Build the Rust MSVC one-click installer for Windows x64.
 
@@ -32,6 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot  = (Resolve-Path (Join-Path $ScriptDir '..\..')).Path
@@ -80,43 +81,84 @@ function Download-File([string]$url, [string]$dest) {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Resolve Rust version from channel TOML
+# 1. Resolve Rust version + component URLs from channel TOML
+#    We parse the TOML manually (PS 5.1 has no built-in TOML parser).
+#    - Top-level `date` is the channel date.
+#    - `[pkg.rust].version` has format "X.Y.Z (commit date)"; we extract X.Y.Z.
+#    - Each component has a per-target section with a precise `url` field.
 # ---------------------------------------------------------------------------
 Write-Step 'Resolving Rust release from channel-rust-stable.toml'
 $channelContent = Invoke-RestMethod -Uri $ChannelUrl -ErrorAction Stop
 if (-not $channelContent) { throw "Empty channel TOML from $ChannelUrl" }
 
-# Parse TOML manually (PS 5.1 has no built-in TOML parser).
-$pkgSection = $false
 $rustVersion = $null
 $rustDate    = $null
-foreach ($line in ($channelContent -split "`n")) {
+$targetUrls  = @{}   # componentName => download URL
+
+$lines = $channelContent -split "`n"
+$currentSection = ''
+foreach ($line in $lines) {
     $line = $line.Trim()
-    if ($line -match '^\[pkg\.rust\]$') { $pkgSection = $true; continue }
-    if ($pkgSection -and $line -match '^version\s*=\s*"([^"]+)"') { $rustVersion = $Matches[1] }
-    if ($pkgSection -and $line -match '^date\s*=\s*"([^"]+)"') { $rustDate = $Matches[1]; break }
-    if ($pkgSection -and $line -match '^\[') { break }
+    if (-not $line) { continue }
+
+    # Track which TOML section we're in (e.g. [pkg.rustc.target.x86_64-pc-windows-msvc])
+    if ($line -match '^\[(.+)\]$') {
+        $currentSection = $Matches[1]
+        continue
+    }
+
+    # Top-level channel date (NOT inside any [pkg.*] section)
+    if ($currentSection -eq '' -and $line -match '^date\s*=\s*"([^"]+)"') {
+        $rustDate = $Matches[1]
+    }
+
+    # Pure version from [pkg.rust]: "1.99.1 (58cf8f9c3 2026-10-13)" → "1.99.1"
+    if ($currentSection -eq 'pkg.rust' -and $line -match '^version\s*=\s*"(\d+\.\d+\.\d+)') {
+        $rustVersion = $Matches[1]
+    }
+
+    # Per-target component URLs from e.g. [pkg.rustc.target.x86_64-pc-windows-msvc]
+    if ($currentSection -match '^pkg\.(rustc|cargo|rust-std)\.target\.' + [regex]::Escape($Target) + '$' -and
+        $line -match '^url\s*=\s*"([^"]+\.tar\.gz)"') {
+        $compName = $Matches[0] -replace '.*pkg\.(\w+)\.target.*', '$1'
+        $targetUrls[$compName] = $Matches[1]
+    }
 }
+
 if (-not $rustVersion) { throw "Could not parse rust version from $ChannelUrl" }
+if (-not $rustDate)    { throw "Could not parse channel date from $ChannelUrl" }
+if (-not $targetUrls['rustc'])    { throw "Could not resolve rustc URL for target $Target" }
+if (-not $targetUrls['cargo'])    { throw "Could not resolve cargo URL for target $Target" }
+if (-not $targetUrls['rust-std']) { throw "Could not resolve rust-std URL for target $Target" }
 
 if ($RustVersion) {
     if ($RustVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid -RustVersion: $RustVersion" }
     if ($RustVersion -ne $rustVersion) {
-        Write-Host "  requested $RustVersion, channel has $rustVersion (using requested)"
+        Write-Host "  requested $RustVersion, channel has $rustVersion (WARNING: old version URLs may 404)"
         $rustVersion = $RustVersion
+        # Note: channel TOML only lists the current stable version's URLs.
+        # If the user pins an older version, we reconstruct the download URLs
+        # using the pinned version + the channel date. This may 404 if the
+        # date directory changed since that old version was published.
     }
 }
 Write-Host "  Rust version : $rustVersion (channel date: $rustDate)"
 
-# Component URLs from the channel TOML. The dist directory uses only the
-# date portion (YYYY-MM-DD) of the RFC3339 date string.
-$distDate = ($rustDate -split 'T')[0]
-$baseUrl = "https://static.rust-lang.org/dist/$distDate"
+# Build the component list using URLs from the channel TOML.
+# If the user pinned a specific version, fall back to URL reconstruction.
 $components = @(
-    @{ Name = 'rustc';    File = "rustc-$rustVersion-$Target.tar.gz" },
-    @{ Name = 'cargo';    File = "cargo-$rustVersion-$Target.tar.gz" },
-    @{ Name = 'rust-std'; File = "rust-std-$rustVersion-$Target.tar.gz" }
+    @{ Name = 'rustc';    Url = $targetUrls['rustc'] },
+    @{ Name = 'cargo';    Url = $targetUrls['cargo'] },
+    @{ Name = 'rust-std'; Url = $targetUrls['rust-std'] }
 )
+foreach ($comp in $components) {
+    # If we pinned a version, the channel URL won't match — reconstruct it
+    if ($comp.Url -notmatch ([regex]::Escape($rustVersion) + '-')) {
+        $baseUrl = [regex]::Replace($comp.Url, '/[^/]+$', '')
+        $comp.Url = "$baseUrl/$($comp.Name)-$rustVersion-$Target.tar.gz"
+        Write-Host "  pinned version: reconstructed $($comp.Name) URL"
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 2. Download all assets
@@ -126,8 +168,8 @@ if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 foreach ($comp in $components) {
-    $url = "$baseUrl/$($comp.File)"
-    $dest = Join-Path $CacheDir $comp.File
+    $url = $comp.Url
+    $dest = Join-Path $CacheDir ([IO.Path]::GetFileName($url))
     Write-Step "Downloading $($comp.Name)"
     Download-File $url $dest
     $comp | Add-Member -NotePropertyName LocalPath -NotePropertyValue $dest
@@ -146,6 +188,7 @@ Download-File $XwinUrl $xwinDest
 # ---------------------------------------------------------------------------
 Write-Step 'Extracting Rust components'
 $tar = 'C:\Windows\System32\tar.exe'
+if (-not (Test-Path $tar)) { throw "tar.exe not found at $tar (Windows 10+ ships it)" }
 foreach ($comp in $components) {
     $tmpDir = Join-Path $CacheDir "extract-$($comp.Name)"
     if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
@@ -179,9 +222,12 @@ if (Test-Path $llvmTmp) { Remove-Item -Recurse -Force $llvmTmp }
 New-Item -ItemType Directory -Force -Path $llvmTmp | Out-Null
 
 # LLVM Windows release is a NSIS installer. Extract with 7-Zip.
-# windows-latest runner has 7-Zip preinstalled at C:\Program Files\7-Zip\7z.exe
-$7z = 'C:\Program Files\7-Zip\7z.exe'
-if (-not (Test-Path $7z)) { throw "7-Zip not found at $7z" }
+$7zCandidates = @(
+    'C:\Program Files\7-Zip\7z.exe',
+    'C:\Program Files (x86)\7-Zip\7z.exe'
+)
+$7z = $7zCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $7z) { throw "7-Zip not found (expected at one of: $($7zCandidates -join ', '))" }
 
 & $7z x -o"$llvmTmp" -y $llvmDest | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "7z extraction failed for LLVM with exit code $LASTEXITCODE" }
@@ -231,7 +277,8 @@ $lldOut = (& (Join-Path $StageDir 'bin\lld-link.exe') --version 2>&1) -join "`n"
 $lldCode = $LASTEXITCODE
 
 $ErrorActionPreference = $prevEap
-if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersion") {
+$rustVersionRe = [regex]::Escape($rustVersion)
+if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersionRe") {
     throw "rustc version mismatch (expected $rustVersion): $rustcOut"
 }
 if ($cargoCode -ne 0) { throw "cargo failed: $cargoOut" }
@@ -242,19 +289,102 @@ Write-Host "  lld-link $lldOut"
 
 # ---------------------------------------------------------------------------
 # 6b. Detect SDK library paths for cargo config
+#     xwin splat output typically has three lib directories:
+#       lib\ucrt\x86_64 — UCRT import libs (Windows Runtime C)
+#       lib\um\x86_64   — Windows SDK import libs (user-mode APIs like kernel32)
+#       lib\vc\x86_64   — VC++ runtime libs (vcruntime.lib, libcmt.lib) — NEEDED
+#     Without the `vc` path, lld-link fails with unresolved symbols like
+#     `__CxxFrameHandler3` (defined in vcruntime.lib).
 # ---------------------------------------------------------------------------
-$ucrtLibDir = Get-ChildItem -Directory -Recurse -Depth 3 -Filter 'x86_64' $sdkDir |
-    Where-Object { $_.FullName -match 'ucrt' } | Select-Object -First 1
-$umLibDir = Get-ChildItem -Directory -Recurse -Depth 3 -Filter 'x86_64' $sdkDir |
-    Where-Object { $_.FullName -match '\\um\\' } | Select-Object -First 1
+function Find-SdkLib([string]$pattern) {
+    return (Get-ChildItem -Directory -Recurse -Depth 3 -Filter 'x86_64' $sdkDir |
+        Where-Object { $_.FullName -match $pattern } | Select-Object -First 1)
+}
 
-if (-not $ucrtLibDir) { Write-Warning 'Could not locate ucrt\x86_64 under sdk\, using default path' }
-if (-not $umLibDir)   { Write-Warning 'Could not locate um\x86_64 under sdk\, using default path' }
+$ucrtLibDir = Find-SdkLib 'ucrt'
+$umLibDir   = Find-SdkLib '\\um\\'
+$vcLibDir   = Find-SdkLib '\\vc\\'
 
-$ucrtRel = if ($ucrtLibDir) { $ucrtLibDir.FullName.Replace($sdkDir, '').TrimStart('\') } else { 'lib\ucrt\x86_64' }
-$umRel   = if ($umLibDir)   { $umLibDir.FullName.Replace($sdkDir, '').TrimStart('\') }   else { 'lib\um\x86_64' }
-Write-Host "  SDK ucrt lib: $ucrtRel"
-Write-Host "  SDK um lib  : $umRel"
+if (-not $ucrtLibDir) { throw 'Could not locate ucrt\x86_64 under sdk\ — xwin output may be malformed' }
+if (-not $umLibDir)   { throw 'Could not locate um\x86_64 under sdk\ — xwin output may be malformed' }
+if (-not $vcLibDir)   { Write-Warning 'Could not locate vc\x86_64 under sdk\ — linking may fail for targets needing vcruntime' }
+
+$ucrtRel = $ucrtLibDir.FullName.Replace($sdkDir, '').TrimStart('\')
+$umRel   = $umLibDir.FullName.Replace($sdkDir, '').TrimStart('\')
+$vcRel   = if ($vcLibDir) { $vcLibDir.FullName.Replace($sdkDir, '').TrimStart('\') } else { '' }
+Write-Host "  SDK ucrt lib : $ucrtRel"
+Write-Host "  SDK um lib   : $umRel"
+Write-Host "  SDK vc lib   : $(if ($vcRel) { $vcRel } else { '(not found)' })"
+
+# ---------------------------------------------------------------------------
+# 6c. Smoke test: real cargo build (mandatory — proves SDK + LLD + rustc
+#     work end-to-end on a clean machine without Visual Studio)
+# ---------------------------------------------------------------------------
+Write-Step 'Smoke testing real cargo build (cargo new + cargo build)'
+$smokeTmp    = Join-Path $BuildDir 'smoke'
+$smokeCargo  = Join-Path $smokeTmp '.cargo-home'
+$smokeProj   = Join-Path $smokeTmp 'helloworld'
+if (Test-Path $smokeTmp) { Remove-Item -Recurse -Force $smokeTmp }
+New-Item -ItemType Directory -Force -Path $smokeCargo | Out-Null
+
+# Build rustflags entries: always ucrt + um, optionally vc runtime.
+$rustflagsLines = (@("    '-L', '$sdkDir\$ucrtRel'", "    '-L', '$sdkDir\$umRel'"))
+if ($vcRel) { $rustflagsLines += "    '-L', '$sdkDir\$vcRel'" }
+$rustflagsToml = ($rustflagsLines -join ",`n")
+
+# Write a temporary cargo config that points to lld-link + SDK libs.
+# Use TOML literal strings (single quotes) so backslashes need no escaping.
+$smokeCfg = @"
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"
+rustflags = [
+$rustflagsToml
+]
+"@
+[IO.File]::WriteAllText((Join-Path $smokeCargo 'config.toml'), $smokeCfg, $utf8NoBom)
+
+# Clear rustup env vars — windows-latest runner has rustup preinstalled.
+# RUSTC/RUSTUP_TOOLCHAIN/RUSTUP_HOME would make cargo invoke the wrong rustc
+# through rustup shims instead of our staged binaries.
+$savedRustEnv = @{}
+foreach ($var in @('RUSTC', 'RUSTUP_TOOLCHAIN', 'RUSTUP_HOME', 'RUSTUP_INIT_SKIP_PATH_CHECK')) {
+    if (Test-Path "Env:\$var") { $savedRustEnv[$var] = (Get-Item "Env:\$var").Value }
+    Remove-Item "Env:\$var" -ErrorAction SilentlyContinue
+}
+
+$env:PATH       = "$StageDir\bin;" + $env:PATH
+$env:CARGO_HOME = $smokeCargo
+
+Push-Location $smokeTmp
+try {
+    & $cargoExe new --bin --vcs none helloworld 2>&1 | ForEach-Object { Write-Host "  cargo new : $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo new failed with exit code $LASTEXITCODE" }
+
+    Push-Location $smokeProj
+    try {
+        & $cargoExe build --release 2>&1 | ForEach-Object { Write-Host "  cargo build : $_" }
+        if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+    }
+    finally { Pop-Location }
+
+    $exe = Join-Path $smokeProj 'target\release\helloworld.exe'
+    if (-not (Test-Path $exe)) { throw "cargo build did not produce $exe" }
+    Write-Host "  smoke build OK => $exe ($((Get-Item $exe).Length) bytes)"
+}
+finally {
+    Pop-Location
+    Remove-Item -Recurse -Force $smokeTmp
+    # Restore PATH and rustup env vars
+    $originalPath = ($env:PATH -split ';' | Where-Object {
+        $_ -and $_ -notmatch [regex]::Escape("$StageDir")
+    }) -join ';'
+    $env:PATH = $originalPath
+    Remove-Item Env:\CARGO_HOME -ErrorAction SilentlyContinue
+    foreach ($var in @('RUSTC', 'RUSTUP_TOOLCHAIN', 'RUSTUP_HOME', 'RUSTUP_INIT_SKIP_PATH_CHECK')) {
+        Remove-Item "Env:\$var" -ErrorAction SilentlyContinue
+        if ($savedRustEnv.ContainsKey($var)) { Set-Item "Env:\$var" $savedRustEnv[$var] }
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 7. Write cargo config template (informational; installer writes the real one)
@@ -263,15 +393,15 @@ Write-Host "  SDK um lib  : $umRel"
 # We stage a template with __APP_DIR__ placeholder for reference / manual use.
 $cargoConfigDir = Join-Path $StageDir '.cargo'
 New-Item -ItemType Directory -Force -Path $cargoConfigDir | Out-Null
+$templateLines = @("    '-L', '__APP_DIR__\sdk\$ucrtRel'", "    '-L', '__APP_DIR__\sdk\$umRel'")
+if ($vcRel) { $templateLines += "    '-L', '__APP_DIR__\sdk\$vcRel'" }
 $cargoConfig = @"
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"
 rustflags = [
-    "-L", "__APP_DIR__\\sdk\\$($ucrtRel -replace '\\', '\\')",
-    "-L", "__APP_DIR__\\sdk\\$($umRel -replace '\\', '\\')"
+$($templateLines -join ",`n")
 ]
 "@
-$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $cargoConfigDir 'config.toml'), $cargoConfig, $utf8NoBom)
 
 # ---------------------------------------------------------------------------
@@ -301,7 +431,8 @@ if (-not $SkipCompile) {
         "/DOutputDir=$OutDir" `
         "/DOutputBaseFilename=$SetupName" `
         "/DSdkUcrtPath=$ucrtRel" `
-        "/DSdkUmPath=$umRel"
+        "/DSdkUmPath=$umRel" `
+        "/DSdkVcPath=$vcRel"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 }
 else {
