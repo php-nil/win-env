@@ -217,12 +217,21 @@ foreach ($comp in $components) {
     & $tar -xf $comp.LocalPath -C $tmpDir
     if ($LASTEXITCODE -ne 0) { throw "tar extraction failed for $($comp.Name)" }
     # Each archive contains a single inner directory like rustc-<ver>-<target>/
-    $inner = Get-ChildItem -Directory $tmpDir | Select-Object -First 1
-    if (-not $inner) { throw "No inner directory in $($comp.Name) archive" }
-    # Merge contents into stage. First component mirrors (to clear stage),
-    # subsequent components overlay without deleting (robocopy /E).
+    # Inside THAT is the actual component subdirectory (rustc/, cargo/, rust-std/)
+    # which holds bin/, lib/, etc. We need to merge the component dir itself,
+    # not the version wrapper dir — otherwise StageDir ends up with nested
+    # paths like StageDir\rustc\bin\rustc.exe instead of StageDir\bin\rustc.exe.
+    $versionDir = Get-ChildItem -Directory $tmpDir | Select-Object -First 1
+    if (-not $versionDir) { throw "No inner directory in $($comp.Name) archive" }
+    $compDir = Join-Path $versionDir.FullName $comp.Name
+    if (-not (Test-Path $compDir)) {
+        # Some archives may flatten directly; fallback: use versionDir contents.
+        $compDir = $versionDir.FullName
+    }
+    Write-Host "  merging from: $compDir"
+    # First component mirrors (to clear stage), subsequent components overlay.
     $rcMode = if ($comp.Name -eq 'rustc') { '/MIR' } else { '/E' }
-    $rcArgs = @($inner.FullName, $StageDir, $rcMode, '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS')
+    $rcArgs = @($compDir, $StageDir, $rcMode, '/NFL', '/NDL', '/NJH', '/NJS', '/NC', '/NS')
     $rcProc = Start-Process -FilePath 'robocopy.exe' -ArgumentList $rcArgs -Wait -PassThru -NoNewWindow
     if ($rcProc.ExitCode -ge 8) { throw "robocopy merge failed for $($comp.Name) with exit code $($rcProc.ExitCode)" }
     Remove-Item -Recurse -Force $tmpDir
