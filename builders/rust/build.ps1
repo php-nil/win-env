@@ -307,7 +307,12 @@ $sdkRoot = $StageDir
 # same drive as the stage tree, stays inside the gitignored build dir, and
 # survives re-runs (downloaded packages are reused). Do NOT use --temp: it
 # unpacks to %TEMP% (C: drive on runners) and the move to D: fails.
-# Windows symlink creation is a no-op in xwin, so no admin/developer-mode risk.
+# NOTE: on Windows xwin's `symlink()` helper is a no-op, BUT
+# `symlink_on_windows_too` is not: it still creates `sdk\lib\<sdkversion>` and
+# `sdk\include\<sdkversion>` as *directory* links pointing at their own parent
+# (".\"). These survive --disable-symlinks (they are created outside that
+# guard) and are stripped by the reparse-point pass right below, since Inno
+# Setup cannot walk them (see section 5b).
 $xwinCache = Join-Path $CacheDir 'xwin'
 & $xwinExe.FullName --accept-license --cache-dir $xwinCache splat --output $sdkRoot
 if ($LASTEXITCODE -ne 0) { throw "xwin SDK extraction failed with exit code $LASTEXITCODE" }
@@ -325,6 +330,39 @@ $hasSdk = Test-Path (Join-Path $sdkRoot 'sdk')
 if (-not ($hasCrt -and $hasSdk)) {
     $tree = (Get-ChildItem -Recurse -Depth 2 $sdkRoot | Select-Object -First 40 | ForEach-Object { $_.FullName.Replace($sdkRoot, '') }) -join "`n"
     throw "xwin output structure unexpected. Top-level entries:`n$tree"
+}
+
+# ---------------------------------------------------------------------------
+# 5b. Strip reparse points (xwin's versioned SDK alias links)
+#     Guard against a hard-to-diagnose Inno Setup abort: ISCC's [Files]
+#     recursion follows `sdk\lib\<sdkversion>` (`symlink_on_windows_too` points
+#     it at its own parent directory "."), loops back into the parent, blows
+#     past the path limit and dies with a line-less
+#         Error in <setup.iss>: The system cannot find the path specified.
+#     exit code 2 — reproduced locally with ISCC 6.7 against the same tree.
+#     setup.iss only ever uses the unversioned sdk paths, so these aliases are
+#     dead weight; drop every reparse point so the tree Inno sees is link-free.
+#     Directory links are deleted *non-recursively* ([IO.Directory]::Delete with
+#     recursive=$false) so the link target's contents are never touched.
+# ---------------------------------------------------------------------------
+Write-Step 'Stripping reparse points (symlinks/junctions) from the staged tree'
+$reparse = @(Get-ChildItem -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } |
+    Sort-Object { $_.FullName.Length } -Descending)
+foreach ($rp in $reparse) {
+    Write-Host "  removing link: $($rp.FullName.Substring($StageDir.Length))"
+    if ($rp.Attributes -band [IO.FileAttributes]::Directory) {
+        [IO.Directory]::Delete($rp.FullName, $false)
+    }
+    else {
+        [IO.File]::Delete($rp.FullName)
+    }
+}
+Write-Host "  removed $($reparse.Count) reparse point(s)"
+$left = @(Get-ChildItem -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue |
+    Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+if ($left.Count) {
+    throw "Stage tree still contains reparse points after cleanup: $($left.FullName -join ', ')"
 }
 
 # ---------------------------------------------------------------------------

@@ -158,7 +158,7 @@ if ($code -ne 0) { throw ... }
 * **现象**：CI 上 `xwin --temp splat --output D:\...\stage\rust\sdk` 报 `failed to move ...\unpack\... to \\?\D:\...`，`os error 17`（The system cannot move the file to a different disk drive）。
 * **根因**：splat 默认把文件从解压目录**移动**到输出目录；`--temp` 固定把解压目录放 `%TEMP%`（runner 上是 C 盘），与 D 盘的 output 跨盘，Windows rename 不支持跨盘。
 * **规则**：用 `--cache-dir <build>\cache\xwin` 而不是 `--temp`——cache、unpack、output 同盘时 move 是零成本 rename；`build\cache` 本来就 gitignore，不污染 repo，重跑还能复用已下载的包。凡"解压/暂存 → move 到目标"类工具（xwin、robocopy /MOV 等）都要先确认两侧在同一卷。
-* **旁证**：xwin 在 Windows 上的 symlink 处理是空操作（`#[cfg(windows)] fn symlink -> Ok(())`），无需 `--disable-symlinks`；`splat` 子命令自动串联 download+unpack，无需分步执行。
+* **旁证**：xwin 的 `splat` 会自动串联 download+unpack，无需分步执行；`--disable-symlinks` 对 Windows 暂存树**没有**意义（详见 §14：`symlink()` 在 Windows 上是空操作，但 `symlink_on_windows_too()` 仍会造出目录链接）。
 
 ## 11. `$ErrorActionPreference='Stop'` 下 `2>&1` 捕获 stderr 会误杀成功的原生命令
 
@@ -180,3 +180,19 @@ if ($code -ne 0) { throw ... }
   1. **Pascal Script 不允许过程内的局部 `const` 块**（`procedure X; const ...; var ...;`）。`const` 只能放 `[Code]` 顶层全局 const 段，过程里只能有 `var`。把 `const` 写在过程里会报 `'BEGIN' expected`。
   2. `LZMADictionarySize` 超过 ISCC 实际可分配的字典上限时，报的是 `LZMA_Encode failed with code 5`，而不是清晰的"参数超范围"。实测本机便携 ISCC：`131072`（128 MB）通过，`163840`（160 MB）及以上全部失败——**可用上限即 128 MB**（与 PHP 包取值一致）。Rust 原本写的 `262144`（256 MB）必然编译失败。
 * **规则**：改 `setup.iss` 后先本地预编译一遍（秒级，见 §5.2 便携 ISCC），造一个**极小的假暂存树**当 `StageDir`，带上 `MyAppVersion` 等 define 直接跑 ISCC，把 Pascal / 压缩类错误一次性抓完，再推 CI。另：TOML/配置里含连续单引号的字面量不要手数引号，定义全局常量 `Q = ''''`（一个单引号字符）再拼接，可证明引号平衡。
+
+## 14. 暂存树里的自引用目录链接会让 ISCC 报"无行号"错误（Windows 上 xwin 必产）
+
+* **现象**：Rust 安装器 CI 到 "Compiling installer" 即失败，报
+  `Error in D:\a\win-env\win-env\builders\rust\setup.iss: The system cannot find the path specified.`（**不带行号**），exit code 2。同一份 setup.iss、同一个 ISCC 6.7，`[Files]` 源树换成 node 那种无链接的树就正常；`cargo build` 冒烟测试也已通过，说明暂存内容本身是好的。
+* **根因**：xwin `splat` 在 Windows 上把 `symlink()` 实现为空操作（`#[cfg(windows)] fn symlink -> Ok(())`），但 `symlink_on_windows_too()` **不是**空操作——处理 SdkLibs / SdkHeaders 时它会创建 `sdk\lib\<sdkversion>` 与 `sdk\include\<sdkversion>` 两个**目录链接**，目标硬编码为 `"."`，即链接指向自己的**父目录**，构成环（`sdk\lib\10.0.26100.0` → `sdk\lib`）。这两个链接在 `if config.enable_symlinks` 之外，**`--disable-symlinks` 挡不住**。Inno Setup 的 `[Files] recursesubdirs` 扫描顺着环回到父目录，路径长度迅速溢出，以 `ERROR_PATH_NOT_FOUND` 中止；此类**扫描期**错误不带行号。
+* **复现与验证**（本地便携 ISCC 6.7，秒级）：合成暂存树里只在 `sdk\lib`、`sdk\include` 下各放一个指向**父目录**的链接，即稳定复现同一条无行号 `Error in <setup.iss>: 系统找不到指定的路径。` + exit 2；删掉这两个链接后，同一条 ISCC 命令 exit 0 并正常出包（真实 SDK 目录内容未受影响）。
+* **错误消息分流表**（无行号 + exit 2 的三类，本机中文 / runner 英文）：
+
+| 源树里的东西 | 消息 | OS 错误码 |
+| --- | --- | --- |
+| 目录链接成环（自引用） | `系统找不到指定的路径` / `The system cannot find the path specified.` | `ERROR_PATH_NOT_FOUND` |
+| 文件软链悬空 | `系统找不到指定的文件` / `The system cannot find the file specified.` | `ERROR_FILE_NOT_FOUND` |
+
+  与之相对，`Source` 目录不存在（`No files found matching`）、`SetupIconFile` 缺失、`MessagesFile` 缺失、Pascal/压缩错误这些**能定位**的问题都会带 `on line N` 或具体值，可据此先分流。悬空**目录**链接（非环）与有效链接 ISCC 都能容忍（exit 0），别只凭"链接"二字下结论。
+* **规则**：暂存树交给 ISCC 前必须**不含任何重解析点**。build.ps1 在 xwin splat 之后、冒烟测试之前清理：枚举 `$StageDir` 下所有带 `ReparsePoint` 属性的条目并删除，随后复查确认为 0。**目录链接必须用 `[IO.Directory]::Delete($p, $false)` 非递归删除**——用 `Remove-Item -Recurse` 会顺着链接把目标（父目录）里的真实文件一起删掉。setup.iss 只用不带版本号的 `sdk\lib\...` 路径，这些版本别名对本包无用，删除无副作用。
