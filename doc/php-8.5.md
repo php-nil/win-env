@@ -55,7 +55,7 @@
 - PATH（**必加，无安装选项**）：安装目录加入**系统** PATH，保证新开命令行中 `php`、`nil` 可直接使用。
   - 安装时幂等追加（不重复、不动无关条目），并广播 `WM_SETTINGCHANGE`；
   - 卸载时精确移除该条目，其余 PATH 内容保留；已打开的旧命令行窗口需重开才能感知变化。
-- `nil` 命令：安装根目录下的 `nil.bat` 包装器以同目录 `php.exe` 运行 `nilpack.phar`（通过 `%~dp0` 定位，与调用方工作目录无关）。常用命令：`nil --version`、`nil list`、`nil phar`（目录打包为 Phar）、`nil composer`（composer 包打包为 Phar）。
+- `nil` 命令：安装根目录下的 `nil.bat` 包装器以同目录 `php.exe` 运行 `nilpack.phar`（通过 `%~dp0` 定位，与调用方工作目录无关），并带 `-d phar.readonly=0`（PHP 默认 `phar.readonly=1`，否则 `nil phar` / `nil composer` 打包会失败；仅对该次 CLI 调用生效，包内 `php.ini` 保持默认）。常用命令：`nil --version`、`nil list`、`nil phar`（目录打包为 Phar）、`nil composer`（composer 包打包为 Phar）。
 - `composer` 命令：安装根目录下的 `composer.bat` 包装器以同目录 `php.exe` 运行 `composer.phar`（与 `nil.bat` 同一自定位模式），新开命令行直接可用，如 `composer --version`、`composer require`。
 - 内置 VC++ 运行库（app-local）：7 个 CRT DLL（vcruntime140、vcruntime140_1、msvcp140、msvcp140_1、msvcp140_2、msvcp140_atomic_wait、msvcp140_codecvt_ids）原样释放在安装目录（与 `php.exe` 同级，加载器优先于 System32 命中），未安装系统级 VC++ 2015-2022 运行库的干净 Windows 10+ 机器上 `php` 也可直接运行；不写入系统目录，卸载随安装目录一并清除。
 - 安装器固定 `AppId`，重复安装/升级会替换同一安装实例。

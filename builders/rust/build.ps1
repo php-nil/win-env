@@ -5,13 +5,17 @@
 .DESCRIPTION
     - Resolves the latest stable Rust release via channel-rust-stable.toml
       (no hardcoded patch versions). Optionally pinned to an exact version.
-    - Downloads rustc/cargo/rust-std for x86_64-pc-windows-msvc.
-    - Downloads LLVM Clang for Windows (to extract lld-link.exe).
+    - Downloads rustc/cargo/rust-std/rustfmt/clippy for x86_64-pc-windows-msvc.
+    - Uses the LLD linker bundled inside the rustc component (rust-lld plus
+      its gcc-ld/lld-link wrapper) — no separate LLVM download.
     - Downloads xwin and extracts Windows SDK / CRT headers and libraries.
     - Stages a unified tree at build/stage/rust (equals C:\pf\rust after install).
-    - Runs mandatory smoke test: staged rustc/cargo must report exact versions.
-    - Compiles an Inno Setup installer which installs to C:\pf\rust by default
-      and appends the install dir to the system PATH.
+    - Runs mandatory smoke test: staged rustc/cargo/rustfmt must report exact
+      versions, and a real `cargo build`, `cargo fmt --check` and `cargo clippy`
+      must all succeed.
+    - Compiles an Inno Setup installer which installs to C:\pf\rust by default,
+      puts the install dir on the system PATH and mirrors official rustup's
+      %USERPROFILE%\.cargo\bin entry on the user PATH.
 
 .PARAMETER RustVersion
     Exact Rust version without leading 'v', e.g. 1.90.0.
@@ -45,13 +49,9 @@ $OutDir   = Join-Path $BuildDir 'output'
 $ChannelUrl = 'https://static.rust-lang.org/dist/channel-rust-stable.toml'
 $Target     = 'x86_64-pc-windows-msvc'
 
-# LLVM release to pull lld-link.exe from. Fixed version for reproducibility;
-# bump when a new LLVM major is proven to work.
-# NOTE: LLVM Windows releases are .tar.xz which Windows tar.exe cannot handle.
-# We use the "LLVM-18.1.8-win64.exe" NSIS installer instead, extract with 7z.
-$LlvmVersion = '18.1.8'
-$LlvmAsset   = "LLVM-$LlvmVersion-win64.exe"
-$LlvmUrl     = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LlvmVersion/$LlvmAsset"
+# LLD comes from the rustc component itself (no LLVM download): rustc ships a
+# self-contained LLD whose real driver is rust-lld.exe plus tiny per-flavor
+# wrappers, one of which is named lld-link.exe. See section 4 below.
 
 # xwin release to pull SDK extraction tool from.
 # Auto-discover latest from GitHub API; avoids hardcoding a version that may
@@ -139,7 +139,7 @@ foreach ($line in $lines) {
     # Per-target component URLs from e.g. [[pkg.rustc.target.x86_64-pc-windows-msvc]]
     # Extract comp name from $currentSection (NOT $Matches[0]) — the inner URL regex
     # overwrites $Matches, so $Matches[0] contains the URL line, not the section.
-    if ($currentSection -match '^pkg\.(rustc|cargo|rust-std)\.target\.' + [regex]::Escape($Target) + '$' -and
+    if ($currentSection -match '^pkg\.(rustc|cargo|rust-std|clippy-preview|rustfmt-preview)\.target\.' + [regex]::Escape($Target) + '$' -and
         $line -match '^url\s*=\s*"([^"]+\.tar\.gz)"') {
         $compName = ($currentSection -split '\.')[1]    # pkg.<name>.target...
         $targetUrls[$compName] = $Matches[1]
@@ -148,9 +148,11 @@ foreach ($line in $lines) {
 
 if (-not $rustVersion) { throw "Could not parse rust version from $ChannelUrl" }
 if (-not $rustDate)    { throw "Could not parse channel date from $ChannelUrl" }
-if (-not $targetUrls['rustc'])    { throw "Could not resolve rustc URL for target $Target" }
-if (-not $targetUrls['cargo'])    { throw "Could not resolve cargo URL for target $Target" }
-if (-not $targetUrls['rust-std']) { throw "Could not resolve rust-std URL for target $Target" }
+if (-not $targetUrls['rustc'])          { throw "Could not resolve rustc URL for target $Target" }
+if (-not $targetUrls['cargo'])          { throw "Could not resolve cargo URL for target $Target" }
+if (-not $targetUrls['rust-std'])       { throw "Could not resolve rust-std URL for target $Target" }
+if (-not $targetUrls['clippy-preview']) { throw "Could not resolve clippy-preview URL for target $Target" }
+if (-not $targetUrls['rustfmt-preview']){ throw "Could not resolve rustfmt-preview URL for target $Target" }
 
 if ($RustVersion) {
     if ($RustVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid -RustVersion: $RustVersion" }
@@ -166,17 +168,30 @@ if ($RustVersion) {
 Write-Host "  Rust version : $rustVersion (channel date: $rustDate)"
 
 # Build the component list using URLs from the channel TOML.
+# Component names are the channel's own names: rustfmt/clippy ship as
+# `rustfmt-preview` / `clippy-preview` (NOT `rustfmt` / `clippy`), and each
+# archive's inner payload directory carries that same name. FileStem is the
+# prefix of the archive FILE name, which drops the `-preview` suffix
+# (clippy-<ver>-<target>.tar.gz) — the two differ, so pinning a version must
+# reconstruct with FileStem, not Name.
+# Verified against the real archives for 1.99.1:
+#   clippy-...:  clippy-preview/{bin/cargo-clippy.exe, bin/clippy-driver.exe,
+#                               share/doc/clippy/*}   (manifest.in also lists *.pdb)
+#   rustfmt-...: rustfmt-preview/{bin/rustfmt.exe, bin/cargo-fmt.exe,
+#                               share/doc/rustfmt/*}  (manifest.in also lists *.pdb)
 # If the user pinned a specific version, fall back to URL reconstruction.
 $components = @(
-    @{ Name = 'rustc';    Url = $targetUrls['rustc'] },
-    @{ Name = 'cargo';    Url = $targetUrls['cargo'] },
-    @{ Name = 'rust-std'; Url = $targetUrls['rust-std'] }
+    @{ Name = 'rustc';           FileStem = 'rustc';    Url = $targetUrls['rustc'] },
+    @{ Name = 'cargo';           FileStem = 'cargo';    Url = $targetUrls['cargo'] },
+    @{ Name = 'rust-std';        FileStem = 'rust-std'; Url = $targetUrls['rust-std'] },
+    @{ Name = 'clippy-preview';  FileStem = 'clippy';   Url = $targetUrls['clippy-preview'] },
+    @{ Name = 'rustfmt-preview'; FileStem = 'rustfmt';  Url = $targetUrls['rustfmt-preview'] }
 )
 foreach ($comp in $components) {
     # If we pinned a version, the channel URL won't match — reconstruct it
     if ($comp.Url -notmatch ([regex]::Escape($rustVersion) + '-')) {
         $baseUrl = [regex]::Replace($comp.Url, '/[^/]+$', '')
-        $comp.Url = "$baseUrl/$($comp.Name)-$rustVersion-$Target.tar.gz"
+        $comp.Url = "$baseUrl/$($comp.FileStem)-$rustVersion-$Target.tar.gz"
         Write-Host "  pinned version: reconstructed $($comp.Name) URL"
     }
 }
@@ -195,10 +210,6 @@ foreach ($comp in $components) {
     Download-File $url $dest
     $comp | Add-Member -NotePropertyName LocalPath -NotePropertyValue $dest
 }
-
-Write-Step 'Downloading LLVM (for lld-link.exe)'
-$llvmDest = Join-Path $CacheDir $LlvmAsset
-Download-File $LlvmUrl $llvmDest
 
 Write-Step 'Downloading xwin (for SDK extraction)'
 $xwinDest = Join-Path $CacheDir $XwinAsset
@@ -249,6 +260,15 @@ $rustcExe = Join-Path $StageDir 'bin\rustc.exe'
 $cargoExe = Join-Path $StageDir 'bin\cargo.exe'
 if (-not (Test-Path $rustcExe)) { throw "rustc.exe missing after merge" }
 if (-not (Test-Path $cargoExe)) { throw "cargo.exe missing after merge" }
+# rustfmt / clippy land in bin\ exactly like official rustup installs them
+# (verified against the real `-preview` archives; their manifest.in also lists
+# the bundled .pdb files, so a full-copy merge matches official content). cargo's
+# external-subcommand lookup finds bin\cargo-fmt.exe and bin\cargo-clippy.exe
+# through PATH, so they must live in the same bin\ that goes onto the system PATH.
+foreach ($rel in @('bin\rustfmt.exe', 'bin\cargo-fmt.exe', 'bin\cargo-clippy.exe', 'bin\clippy-driver.exe')) {
+    $p = Join-Path $StageDir $rel
+    if (-not (Test-Path $p)) { throw "$rel missing after merge (rustfmt/clippy component)" }
+}
 # Fail fast if rust-std landed at the wrong level. rustc's sysroot is the parent
 # of bin\, so std must sit at lib\rustlib\<target>\lib. Checking here turns a
 # cryptic `E0463: can't find crate for std` at cargo-build time into a clear error.
@@ -260,28 +280,28 @@ if (-not (Test-Path $stdLibDir)) {
 }
 
 # ---------------------------------------------------------------------------
-# 4. Extract lld-link.exe from LLVM
+# 4. Locate the LLD linker bundled with the rustc component
+#    rustc ships a self-contained LLD: the real multi-flavor driver at
+#      lib\rustlib\<target>\bin\rust-lld.exe
+#    plus tiny per-flavor wrappers at
+#      lib\rustlib\<target>\bin\gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe
+#    The `lld-link` wrapper finds `rust-lld` relative to its OWN directory:
+#    verified locally that it runs in place in this exact layout and fails with
+#    "lld-wrapper: error running rust-lld child process: os error 2" once moved
+#    away from it. So the shipped relative layout MUST stay intact — cargo's
+#    `linker` is pointed straight at the wrapper, nothing is copied to bin\.
+#    This removes the former LLVM download, the 7-Zip dependency and the
+#    hardcoded LLVM version, and keeps LLD version-aligned with rustc.
 # ---------------------------------------------------------------------------
-Write-Step 'Extracting lld-link.exe from LLVM'
-$llvmTmp = Join-Path $CacheDir 'extract-llvm'
-if (Test-Path $llvmTmp) { Remove-Item -Recurse -Force $llvmTmp }
-New-Item -ItemType Directory -Force -Path $llvmTmp | Out-Null
-
-# LLVM Windows release is a NSIS installer. Extract with 7-Zip.
-$7zCandidates = @(
-    'C:\Program Files\7-Zip\7z.exe',
-    'C:\Program Files (x86)\7-Zip\7z.exe'
-)
-$7z = $7zCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $7z) { throw "7-Zip not found (expected at one of: $($7zCandidates -join ', '))" }
-
-& $7z x -o"$llvmTmp" -y $llvmDest | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "7z extraction failed for LLVM with exit code $LASTEXITCODE" }
-
-$lldLink = Get-ChildItem -Recurse -Filter 'lld-link.exe' $llvmTmp | Select-Object -First 1
-if (-not $lldLink) { throw "lld-link.exe not found in LLVM archive" }
-Copy-Item -Force $lldLink.FullName (Join-Path $StageDir 'bin\')
-Remove-Item -Recurse -Force $llvmTmp
+Write-Step 'Locating bundled LLD (rust-lld driver + gcc-ld/lld-link wrapper)'
+$rustLldDir = Join-Path $StageDir "lib\rustlib\$Target\bin"
+$rustLld    = Join-Path $rustLldDir 'rust-lld.exe'          # real driver
+$lldLink    = Join-Path $rustLldDir 'gcc-ld\lld-link.exe'   # flavor wrapper
+if (-not (Test-Path $rustLld)) { throw "Bundled rust-lld driver missing: $rustLld" }
+if (-not (Test-Path $lldLink)) { throw "Bundled lld-link wrapper missing: $lldLink" }
+$lldRel = $lldLink.Substring($StageDir.Length).TrimStart('\')
+Write-Host "  rust-lld : $($rustLld.Substring($StageDir.Length).TrimStart('\'))"
+Write-Host "  lld-link : $lldRel"
 
 # ---------------------------------------------------------------------------
 # 5. Extract Windows SDK via xwin
@@ -376,8 +396,15 @@ $rustcOut = (& $rustcExe --version 2>&1) -join "`n"
 $rustcCode = $LASTEXITCODE
 $cargoOut = (& $cargoExe --version 2>&1) -join "`n"
 $cargoCode = $LASTEXITCODE
-$lldOut = (& (Join-Path $StageDir 'bin\lld-link.exe') --version 2>&1) -join "`n"
+# The lld-link wrapper must be exercised from its real location: it spawns the
+# rust-lld driver found relative to itself, so calling the staged wrapper in
+# place also proves the bundled driver is discoverable post-install.
+$lldOut = (& $lldLink --version 2>&1) -join "`n"
 $lldCode = $LASTEXITCODE
+# The staged formatter must run on its own too (it is its own binary, not a
+# cargo shim): proves bin\rustfmt.exe was merged and is executable.
+$rustfmtOut = (& (Join-Path $StageDir 'bin\rustfmt.exe') --version 2>&1) -join "`n"
+$rustfmtCode = $LASTEXITCODE
 
 $ErrorActionPreference = $prevEap
 $rustVersionRe = [regex]::Escape($rustVersion)
@@ -386,9 +413,12 @@ if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersionRe") {
 }
 if ($cargoCode -ne 0) { throw "cargo failed: $cargoOut" }
 if ($lldCode -ne 0) { throw "lld-link failed: $lldOut" }
+if ($rustfmtCode -ne 0) { throw "rustfmt failed: $rustfmtOut" }
+$lldVer = if ($lldOut -match 'LLD (\S+)') { $Matches[1] } else { 'unknown' }
 Write-Host "  $rustcOut"
 Write-Host "  $cargoOut"
 Write-Host "  lld-link $lldOut"
+Write-Host "  $rustfmtOut"
 
 # ---------------------------------------------------------------------------
 # 6b. Locate SDK library paths (relative to install root = StageDir).
@@ -441,11 +471,13 @@ $rustflagsLines = @(
 )
 $rustflagsToml = ($rustflagsLines -join ",`n")
 
-# Write a temporary cargo config that points to lld-link + SDK libs.
-# Use TOML literal strings (single quotes) so backslashes need no escaping.
+# Write a temporary cargo config that points to the bundled lld-link wrapper
+# (absolute path — the wrapper resolves its rust-lld sibling relative to
+# itself) plus the SDK lib dirs. TOML literal strings (single quotes) keep
+# Windows backslashes unescaped.
 $smokeCfg = @"
 [target.x86_64-pc-windows-msvc]
-linker = "lld-link"
+linker = '$lldLink'
 rustflags = [
 $rustflagsToml
 ]
@@ -487,6 +519,16 @@ try {
     $exe = Join-Path $smokeProj 'target\release\helloworld.exe'
     if (-not (Test-Path $exe)) { throw "cargo build did not produce $exe" }
     Write-Host "  smoke build OK => $exe ($((Get-Item $exe).Length) bytes)"
+
+    # rustfmt / clippy through cargo's external-subcommand resolution: this
+    # proves bin\cargo-fmt.exe and bin\cargo-clippy.exe are reachable via PATH
+    # and that both tools really run (clippy lints the crate, fmt verifies it).
+    & $cargoExe fmt --check 2>&1 | ForEach-Object { Write-Host "  cargo fmt : $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed with exit code $LASTEXITCODE" }
+
+    & $cargoExe clippy 2>&1 | ForEach-Object { Write-Host "  cargo clippy : $_" }
+    if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed with exit code $LASTEXITCODE" }
+    Write-Host "  smoke rustfmt/clippy OK"
 }
 finally {
     Pop-Location
@@ -505,10 +547,13 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
-# 7. Write cargo config template (informational; installer writes the real one)
+# 7. Write cargo config template (fallback only; the installer decides)
 # ---------------------------------------------------------------------------
-# The installer writes %USERPROFILE%\.cargo\config.toml at ssPostInstall.
-# We stage a template with __APP_DIR__ placeholder for reference / manual use.
+# The installer writes %USERPROFILE%\.cargo\config.toml ONLY when the machine
+# has no usable MSVC toolchain (no VS C++ tools and/or no Windows SDK). When a
+# system toolchain exists, official defaults are kept and nothing is written.
+# This staged template uses the __APP_DIR__ placeholder and is deleted from the
+# install dir at ssPostInstall — it is the source of truth for the fallback.
 $cargoConfigDir = Join-Path $StageDir '.cargo'
 New-Item -ItemType Directory -Force -Path $cargoConfigDir | Out-Null
 $templateLines = @(
@@ -518,7 +563,7 @@ $templateLines = @(
 )
 $cargoConfig = @"
 [target.x86_64-pc-windows-msvc]
-linker = "lld-link"
+linker = '__APP_DIR__\$lldRel'
 rustflags = [
 $($templateLines -join ",`n")
 ]
@@ -553,7 +598,8 @@ if (-not $SkipCompile) {
         "/DOutputBaseFilename=$SetupName" `
         "/DSdkUcrtPath=$ucrtRel" `
         "/DSdkUmPath=$umRel" `
-        "/DSdkVcPath=$vcRel"
+        "/DSdkVcPath=$vcRel" `
+        "/DSdkLldPath=$lldRel"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 }
 else {
@@ -564,16 +610,22 @@ else {
 # 9. Metadata / release notes / GitHub outputs
 # ---------------------------------------------------------------------------
 $buildInfo = [ordered]@{
-    package     = 'rust'
-    rustVersion = $rustVersion
-    channelDate = $rustDate
-    target      = $Target
-    llvmVersion = $LlvmVersion
-    xwinVersion = $XwinVersion
-    defaultPath = 'C:\pf\rust'
-    pathEntries = @('C:\pf\rust\bin')
-    commands    = @('rustc', 'cargo')
-    builtAt     = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    package        = 'rust'
+    rustVersion    = $rustVersion
+    channelDate    = $rustDate
+    target         = $Target
+    rustChannelUrl = $ChannelUrl
+    componentUrls  = @($components | ForEach-Object { $_.Url })
+    lldVersion     = $lldVer
+    lldSource      = 'rustc component (bundled rust-lld, via gcc-ld/lld-link.exe)'
+    xwinVersion    = $XwinVersion
+    xwinSource     = 'https://github.com/Jake-Shadle/xwin'
+    sdkSource      = 'Microsoft official CDN (extracted via xwin)'
+    defaultPath    = 'C:\pf\rust'
+    pathEntries    = @('C:\pf\rust\bin', '%USERPROFILE%\.cargo\bin')
+    components     = @($components | ForEach-Object { $_.Name })
+    commands       = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy')
+    builtAt        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 }
 if (-not $SkipCompile) {
     $hash = (Get-FileHash -Algorithm SHA256 $SetupExe).Hash.ToLower()
@@ -594,23 +646,26 @@ if (-not $SkipCompile) {
 | 组件 | 版本 / 来源 |
 | --- | --- |
 | Rust | $rustVersion（stable channel，$rustDate） |
+| rustfmt | 随 Rust $rustVersion（官方 rustfmt-preview 组件，含 cargo-fmt） |
+| clippy | 随 Rust $rustVersion（官方 clippy-preview 组件，含 clippy-driver） |
 | 目标 | x86_64-pc-windows-msvc |
-| LLD | $LlvmVersion（LLVM 官方 Release 提取 lld-link.exe） |
+| LLD | $lldVer（rustc 官方组件内置 rust-lld，经 ``gcc-ld\lld-link.exe`` 封装） |
 | xwin | $XwinVersion（提取 Windows SDK / CRT） |
 
 ## 默认行为
 
 - 默认安装目录：``C:\pf\rust``（安装向导中可修改）
-- 安装后自动将 ``C:\pf\rust\bin`` 加入系统 PATH，新开命令行可直接使用 ``rustc``、``cargo``
-- 内置 lld-link.exe 作为链接器，无需 Visual Studio
-- 内置 Windows SDK / CRT 头文件与库（经 xwin 从微软官方 CDN 提取）
-- 安装器写 ``%USERPROFILE%\.cargo\config.toml`` 配置链接器与库路径
+- 安装后自动将 ``C:\pf\rust\bin`` 加入系统 PATH，新开命令行可直接使用 ``rustc``、``cargo``、``rustfmt``、``cargo fmt``、``cargo clippy``
+- 同时把 ``%USERPROFILE%\.cargo\bin`` 加入用户 PATH（与官方 rustup 的做法一致），使 ``cargo install`` 装出的子命令可直接按名调用；卸载时仅回收由本安装器新增的条目
+- 安装器在安装时探测系统 MSVC 工具链（VS C++ 工具 + Windows SDK）：
+  - 探测到：完全按官方默认，**不写任何 cargo 配置**，rustc 自行发现 ``link.exe`` 与 SDK 库
+  - 探测不到：启用包内 LLD（rustc 自带 rust-lld）与内置 Windows SDK / CRT 库（经 xwin 从微软官方 CDN 提取），并写入 ``%USERPROFILE%\.cargo\config.toml`` 配置链接器与库路径（卸载时回收该配置段）
 - 安装/卸载对系统 PATH 均为幂等精确操作，不改动其他条目
 
 ## 重要说明
 
 - 本包包含从微软官方 CDN 提取的 CRT/SDK 文件，用户需确认符合微软许可条款
-- 使用 LLD 作为链接器，调试信息（PDB）支持可能略逊于原生 link.exe
+- 链接器为 LLD（rustc 自带 rust-lld）：官方文档声明其 PDB 与原生 link.exe 同级，仅不支持已废弃的 /DEBUG:FASTLINK；超大 PDB 场景下 LLD 反而更稳
 - 含 C 依赖的 crate 需自行配置 ``CC=clang-cl`` 及头文件路径
 
 ## 校验

@@ -9,7 +9,17 @@
 * **现象**：CI 发布的 Release 正文中文全部乱码（标题来自 workflow YAML 却正常）。
 * **根因**：PS 5.1 对**无 BOM** 的 `.ps1` 按系统 ANSI 代码页（GitHub runner 为 cp1252）解析，中文字面量在解析阶段已损坏，再以 UTF-8 写出形成双重乱码。YAML 由 Actions 按 UTF-8 读取，故标题正常。
 * **规则**：任何含非 ASCII 字符的 `.ps1` 必须带 BOM（`EF BB BF`）。加 BOM 后重跑构建，release-notes.md 中文恢复正常。
-* **注意**：部分编辑器/格式化器会悄悄去掉 BOM；修改此类文件后需复查文件头三字节。
+* **注意**：编辑器/工具链会悄悄去掉 BOM —— 已实测：用 AI 编辑工具改 `builders/rust/build.ps1` 后，文件头从 `EF BB BF` 变成 `3C 23 0A`（BOM 被剥掉），若直接提交会让 CI 重新乱码。**每次改完任何含中文的 `.ps1`，必须复查文件头三字节并补回**：
+
+```powershell
+$p = 'builders\rust\build.ps1'; $b = [IO.File]::ReadAllBytes($p)
+if (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) {
+    $out = New-Object byte[] ($b.Length + 3)
+    $out[0] = 0xEF; $out[1] = 0xBB; $out[2] = 0xBF
+    [Array]::Copy($b, 0, $out, 3, $b.Length)
+    [IO.File]::WriteAllBytes($p, $out)
+}
+```
 
 ### 1.2 PS 5.1 的 `Out-File -Encoding utf8` 会写 BOM
 
@@ -47,6 +57,11 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * **现象**：PHP 暂存树约 98 MB、pnpm 约 52 MB，`Compression=lzma2/max` 出包后仍有约 3% 的可压缩空间未被利用。
 * **根因**：`lzma2/max` 预设的默认字典（小于 64 MB）无法在一个固实块内覆盖整个暂存树，跨块重复数据无法去重。
 * **规则**：两个安装器均显式设 `LZMADictionarySize=131072`（128 MB，KB 单位），实测 PHP 25.06→24.36 MB、pnpm 16.67→16.18 MB（各约 −2.8%/−2.9%）。代价：解包时额外约 130 MB 内存（开发机可忽略），压缩内存只发生在构建 runner 上。暂存树显著增大后按"大于字典则上调"复核。
+
+### 2.5 本地预编译 `.iss` 时 `[Files]` 的 Source 通配至少匹配一个文件
+
+* **现象**：为验证 `setup.iss` 语法，用便携 ISCC 指向一个**空**的假暂存目录，报 `Error on line <N>: No files found matching "<dir>\*"` 并以 exit 2 中止，看起来像脚本语法错误，实际是通配无匹配。
+* **规则**：本地预编译校验时，假暂存目录里先放一个占位文件（`dummy.txt`）再编译；真正的判据是最后必须出现 `Successful compile` 且 `$LASTEXITCODE = 0`。校验产物与假暂存目录同步清理，不留残余。
 
 ## 3. PowerShell 正则与文本处理
 
@@ -141,7 +156,7 @@ if ($code -ne 0) { throw ... }
 
 ## 6. 安装器行为模式（复用基线）
 
-* 包内命令包装器固定模式：`"%~dp0php.exe" "%~dp0nilpack.phar" %*`，靠 `%~dp0` 自定位，与调用方 CWD 无关。
+* 包内命令包装器固定模式：`"%~dp0php.exe" "%~dp0nilpack.phar" %*`，靠 `%~dp0` 自定位，与调用方 CWD 无关。需要写 Phar 的包装器（`nil.bat`）额外带 `-d phar.readonly=0`——PHP 默认 `phar.readonly=1`，不改 ini 也能让该次调用可写 Phar。
 * 安装目录相关配置用 `__APP_DIR__` 占位符写进文件，`CurStepChanged(ssPostInstall)` 时按 `{app}` 替换，改安装目录也不出错。
 * PATH 改写：按分号拆分、大小写不敏感比较、去空条目后幂等重写；安装追加、卸载精确删除自身条目。
 * 每次改 setup.iss 后必做：静默安装到**非默认目录** → 注册表 PATH + 裸命令验证 → 静默卸载 → 文件/PATH 双清零验证。
@@ -196,3 +211,21 @@ if ($code -ne 0) { throw ... }
 
   与之相对，`Source` 目录不存在（`No files found matching`）、`SetupIconFile` 缺失、`MessagesFile` 缺失、Pascal/压缩错误这些**能定位**的问题都会带 `on line N` 或具体值，可据此先分流。悬空**目录**链接（非环）与有效链接 ISCC 都能容忍（exit 0），别只凭"链接"二字下结论。
 * **规则**：暂存树交给 ISCC 前必须**不含任何重解析点**。build.ps1 在 xwin splat 之后、冒烟测试之前清理：枚举 `$StageDir` 下所有带 `ReparsePoint` 属性的条目并删除，随后复查确认为 0。**目录链接必须用 `[IO.Directory]::Delete($p, $false)` 非递归删除**——用 `Remove-Item -Recurse` 会顺着链接把目标（父目录）里的真实文件一起删掉。setup.iss 只用不带版本号的 `sdk\lib\...` 路径，这些版本别名对本包无用，删除无副作用。
+
+## 15. rustc 组件自带 rust-lld，`gcc-ld\lld-link.exe` 是按相对路径拉起它的包装器
+
+* **背景**：Rust MSVC 打包最初为拿到 `linker = "lld-link"`，从 LLVM 官方 Release 下载整个 Clang 包（约 250 MB）再用 7-Zip 解压提取 `lld-link.exe`——既慢又引入外部工具依赖，还硬编码了 LLVM 版本。
+* **事实（本地实测，直接查 rustc 组件 tar.gz）**：`rustc-<v>-x86_64-pc-windows-msvc.tar.gz` 内已含
+  * `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`——真正的多 flavor LLD 驱动（约 122 MB，全静态）；
+  * `...\bin\gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe`——极小的按名分派包装器（`lld-link.exe` 约 325 KB）。
+* **包装器行为**：`gcc-ld\lld-link.exe` **不是**自包含链接器，它按**自身所在目录的相对路径**去找并拉起 `rust-lld`。实测：在组件原始布局（包装器在 `...\bin\gcc-ld\`、驱动在 `...\bin\`）下 `lld-link.exe --version` 正常返回 `LLD <ver>`，带真实参数时报的是 `rust-lld: error: ...`（证明子进程已跑起来）；把它单独拷到别的目录（或拷到 `bin\` 而不带驱动）即报 `lld-wrapper: error running rust-lld child process: 系统找不到指定的文件。 (os error 2)`。
+* **规则**：直接用 rustc 自带的 LLD——cargo 的 `linker` 指向**安装目录内** `lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe` 的绝对路径，且**必须保持组件原始相对布局**（不要单独搬运 `lld-link.exe`）。如此可彻底移除 LLVM 下载、7-Zip 依赖与硬编码版本，且 LLD 版本与 rustc 天然一致。冒烟测试**就地**调用该包装器 `--version`，即可顺带证明 `rust-lld` 子进程可被发现。
+
+## 16. rustfmt / clippy 的组件名带 `-preview`，归档文件名不带
+
+* **现象**：给 Rust 包补 rustfmt / clippy 时，按 `pkg.rustfmt` / `pkg.clippy` 去 channel TOML 里找组件节，**两个都搜不到**（全文无匹配）；若按"组件名"拼下载 URL（例如 pinned 版本重建 `rustfmt-preview-<ver>-<target>.tar.gz`），下载必然 404。
+* **事实（拉真实样本实测：2026-10-15 的 `channel-rust-stable.toml` + 两个组件归档 `tar -tzf` / `manifest.in`）**：
+  * channel 里的组件节名是 `[pkg.rustfmt-preview.target.x86_64-pc-windows-msvc]`、`[pkg.clippy-preview.target.x86_64-pc-windows-msvc]`，**带 `-preview`**；
+  * 同一节 `url` 值指向的文件名却是 `rustfmt-1.99.1-x86_64-pc-windows-msvc.tar.gz`、`clippy-1.99.1-x86_64-pc-windows-msvc.tar.gz`，**不带 `-preview`**；
+  * 归档内层：版本目录 → 组件目录（名字 **= 组件名**，即 `rustfmt-preview/`、`clippy-preview/`）→ `bin\rustfmt.exe`、`bin\cargo-fmt.exe` / `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者的 `manifest.in` 都同时列出 `*.pdb`，说明**全量拷贝组件目录 = 官方安装内容**（官方也装这些 PDB）。
+* **规则**：组件表把"**解析键 / 内层合并目录名**（带 `-preview`）"与"**归档文件名前缀**（不带 `-preview`）"分成两个字段分别存放（本仓库为 `Name` 与 `FileStem`），重建 URL 只用后者，否则 404 或合并目录取空（fallback 会多套一层）。rustfmt / clippy 的全部可执行文件都落在 `bin\`（`cargo fmt` / `cargo clippy` 靠 PATH 找 `cargo-fmt.exe` / `cargo-clippy.exe`），因此必须与 `cargo.exe` 同处 `bin\`——即加入系统 PATH 的那个目录。按此规则补组件后，`[Files]` 源树自然包含它们，安装器无需额外改动。

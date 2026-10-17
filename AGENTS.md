@@ -87,9 +87,9 @@
 
 | 日期 | 变更摘要 |
 | --- | --- |
+| 2026-10-17 | Rust 包补齐 rustfmt / clippy 组件与用户级 PATH：`$components` 增加 channel 组件 `rustfmt-preview` / `clippy-preview`（归档文件名不带 `-preview`，故组件表分离 `Name` 与 `FileStem`），暂存树校验四个新二进制、冒烟测试增加 `rustfmt --version`、`cargo fmt --check` 与 clippy 真实 lint；安装器把 `%USERPROFILE%\.cargo\bin` 加入用户 PATH（`HKCU\Environment`，与官方 rustup 一致），卸载仅回收本安装器新增的条目 |
+| 2026-10-17 | PHP 包 `nil.bat` 包装器增加 `-d phar.readonly=0`：PHP 默认 `phar.readonly=1`，导致 `nil phar` / `nil composer` 打包 Phar 失败；仅对该次 CLI 调用放宽，包内 php.ini 保持默认 |
+| 2026-10-17 | Rust 打包链路优化与补齐：移除 LLVM 下载与 7-Zip 依赖，改用 rustc 组件自带的 `rust-lld`（经 `gcc-ld\lld-link.exe` 包装器按相对路径拉起，cargo `linker` 改指向安装目录内绝对路径），同时消除硬编码 LLVM 版本；安装器卸载时回收 `%USERPROFILE%\.cargo\config.toml` 目标段；`build-info.json` 增补组件来源 URL；新增 [doc/rust.md](doc/rust.md) 打包文档（此前 AGENTS 文档索引为悬空引用）；新增"与官方安装一致"策略——安装器探测系统 MSVC 工具链（VS C++ 工具目录 + Windows SDK 注册），探测到则**完全不写 cargo 配置**（官方默认，rustc 自行发现 `link.exe` 与 SDK 库），探测不到才写内置 LLD + 内置 SDK 库路径的兜底配置，并回收历史残留段 |
 | 2026-10-16 | Rust `build.ps1` 新增重解析点清理：xwin splat 在 Windows 上必产 `sdk\lib\<sdkversion>`、`sdk\include\<sdkversion>` 两个**指向父目录**的目录链接（`--disable-symlinks` 挡不住），会让 ISCC 的 [Files] 扫描绕环溢出、报无行号 `The system cannot find the path specified` + exit 2；现于 xwin 之后、冒烟之前逐个非递归删除并复查为 0（见 doc/lessons.md §14） |
 | 2026-10-16 | Rust 安装器 `setup.iss` 修复三个只在 ISCC 编译期暴露的错误：过程内局部 `const` 改为全局 const、rustflags 字面量改用全局 `Q` 常量拼接、`LZMADictionarySize` 由 262144 降至 131072（128 MB 为实测可用上限） |
 | 2026-10-16 | PHP 包调整 php.ini 默认值：`apc.enable_cli=0`（CLI 下 APCu 默认不生效）、`date.timezone = Asia/Shanghai`；移除 Xdebug/APCu/Composer 版本选项（workflow 与 build.ps1 参数），一律取官方最新可用版本；冒烟测试同步校验时区与 APCu 行为 |
-| 2026-10-16 | 新增 Rust MSVC 一键打包链路（stable channel 自动发现版本，默认 `C:\pf\rust`；内置 LLD 链接器 + xwin 提取的 Windows SDK/CRT，免 Visual Studio；构建含真实 `cargo new` + `cargo build --release` 冒烟测试；安装器写 `%USERPROFILE%\.cargo\config.toml` 并做段级合并） |
-| 2026-10-16 | PHP 包新增 APCu（官方 PECL `php_apcu.dll`，放入 `ext\`）并在 php.ini 中默认开启（`apc.enabled=1`、`apc.enable_cli=1`、`apc.shm_size=32M`）；workflow 新增 `apcu_version` 输入，冒烟测试增加 APCu 校验 |
-| 2026-10-14 | 新增 Node.js LTS 一键打包链路（官方 dist 索引自动发现最新 LTS，默认 `C:\pf\node`，PATH 必加；安装包 25.44 MiB） |
