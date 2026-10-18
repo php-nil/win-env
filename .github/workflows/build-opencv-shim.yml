@@ -113,7 +113,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build-mingw
-          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v1
+          # -v2: the OpenCV configure flags changed (added -DWITH_ADE=OFF), so a
+          # build tree cached under -v1 would carry a stale WITH_ADE:ON CMakeCache
+          # and the ade export entry. Force a clean reconfigure rather than rely on
+          # CMake's cache-var-change path to regenerate OpenCVModules.cmake.
+          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v2
 
       - name: Setup portable MinGW
         shell: powershell
@@ -233,7 +237,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build-msvc
-          key: opencv-msvc-build-${{ needs.resolve.outputs.opencv_version }}-v1
+          # -v2: same reason as the gnu route's build-tree cache above -- the
+          # configure flags changed (added -DWITH_ADE=OFF), so start from a clean
+          # reconfigure instead of a tree cached under the old flags.
+          key: opencv-msvc-build-${{ needs.resolve.outputs.opencv_version }}-v2
 
       - name: Install Ninja
         shell: powershell
@@ -265,6 +272,12 @@ jobs:
             '-DBUILD_LIST=core,imgproc',
             '-DBUILD_SHARED_LIBS=OFF',
             '-DOPENCV_DISABLE_THREAD_SUPPORT=ON',
+            # BUILD_LIST whitelists gapi off, but modules/gapi/cmake/init.cmake still
+            # creates and exports a dangling "ade" target into OpenCVModules.cmake
+            # while no ade lib is ever built. Harmless here (msvc never consumes that
+            # config; it compiles the shim with cl directly) but kept identical to the
+            # gnu route so the two flag sets stay in lockstep.
+            '-DWITH_ADE=OFF',
             '-DBUILD_TESTS=OFF', '-DBUILD_PERF_TESTS=OFF', '-DBUILD_EXAMPLES=OFF',
             '-DBUILD_opencv_apps=OFF', '-DBUILD_DOCS=OFF', '-DBUILD_JAVA=OFF',
             '-DBUILD_opencv_python2=OFF', '-DBUILD_opencv_python3=OFF',
@@ -308,12 +321,21 @@ jobs:
         run: |
           $vcvars = '${{ steps.vcvars.outputs.path }}'
           New-Item -ItemType Directory -Force out-msvc | Out-Null
-          # OpenCV 4.x cmake --install produces <prefix>/include/opencv4/opencv2/...
-          # (NOT <prefix>/include/opencv2/...). shim.cpp uses #include <opencv2/...>
-          # so -I must point at the opencv4 directory.
-          $includeDir = (Get-ChildItem -Recurse "$PWD\msvc-install\include" -Directory -Filter opencv4 |
-                         Select-Object -First 1).FullName
-          if (-not $includeDir) { throw "opencv4 include dir not found under msvc-install\include" }
+          # cmake --install's header layout depends on the host branch:
+          #   Windows host: <prefix>\include\opencv2\...  (OpenCVInstallLayout.cmake
+          #                 takes the WIN32 branch: OPENCV_INCLUDE_INSTALL_PATH=include,
+          #                 so there is NO extra opencv4 level)
+          #   UNIX host   : <prefix>\include\opencv4\opencv2\...
+          # opencv_shim.cpp uses #include <opencv2/...>, so -I must point at whichever
+          # directory CONTAINS opencv2\. Derive it from the real installed header
+          # (opencv_modules.hpp always lives inside opencv2\) instead of assuming one
+          # layout, so a layout change fails here loudly rather than as a confusing
+          # "cannot open opencv2/core.hpp" further down.
+          $hpp = Get-ChildItem -Recurse "$PWD\msvc-install" -Filter opencv_modules.hpp -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $hpp) { throw 'opencv_modules.hpp not found under msvc-install - check cmake --install output' }
+          $includeDir = $hpp.Directory.Parent.FullName
+          Write-Host "opencv_modules.hpp = $($hpp.FullName)"
           # Locate the lib dir by search instead of hardcoding <prefix>\lib: a static
           # CMake install does use <prefix>\lib\ (not the prebuilt package's
           # x64\vc17\staticlib), but a layout change must fail loudly here rather

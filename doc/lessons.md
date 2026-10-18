@@ -273,3 +273,15 @@ if ($code -ne 0) { throw ... }
 * **为何没被暂存冒烟测试拦下**：冒烟测试用**独立的 scratch 目录**（`build/cache/pgsmoke`）、且直接调用 `initdb.exe`，不走管理脚本里"先建目录再 initdb"的那段逻辑，因此这条路径漏检；只有**真机静默安装 → 裸命令首次 `pg-start`** 才暴露。教训：管理脚本自身的逻辑要在**安装后的真实路径**上验证，不能只靠暂存树冒烟。
 * **规则**：管理脚本初始化集群时，`-D` 目标目录**只允许为空**——先只 `mkdir "%DATA%"`（或干脆不建、让 `initdb` 自建），口令临时文件一律放 `%TEMP%`，`logs\` 及其它运行期文件都在 `initdb` 成功**之后**才创建。
 
+## 23. OpenCV `BUILD_LIST` 剔除 gapi 后，`ade` 目标仍被导出进 `OpenCVModules.cmake`（引用不存在的 `libade.a`）
+
+* **现象（2026-10 CI 实测，OpenCV 4.14.0）**：MinGW 路线 configure shim 时 `find_package(OpenCV)` 失败，栈为 `OpenCVConfig.cmake` → `OpenCVModules.cmake`，报文 `The imported target "ade" references the file "…/x64/mingw/staticlib/libade.a" but this file does not exist`。
+* **根因**：`-DBUILD_LIST=core,imgproc` 只在 `OpenCVModule.cmake` 的白名单层剔掉 gapi，但 `modules/gapi/cmake/init.cmake` 在 configure 期仍被求值：`OCV_OPTION(WITH_ADE "…" ON)` 默认开启后经 `DownloadADE.cmake` 创建 `ade` 目标，并被 `ocv_install_target(... EXPORT OpenCVModules ...)` 写进安装出的 `OpenCVModules.cmake`——而 gapi 不在构建列表里，`libade.a` 从不产出。
+* **规则**：最小裁剪 OpenCV 时，凡"被 `BUILD_LIST` 剔除但仍会创建副作用目标"的模块，要显式关掉其开关；此处 `-DWITH_ADE=OFF` 命中 `init.cmake` 的 `if(NOT WITH_ADE) return()` 短路，`ade` 目标既不创建也不导出（对已剔除的 gapi 无任何影响）。注意 msvc 路线不走 `find_package`（cl 直编），本不会被这个坏 config 绊到，但仍加同一旗标以保持两条路线旗标集一致。
+
+## 24. OpenCV `cmake --install` 的头文件布局随 host 分支而变；Windows host 下是扁平的 `include\opencv2`（**无** `opencv4` 层）
+
+* **现象（2026-10 CI 实测，OpenCV 4.14.0）**：msvc 路线按目录名检索头文件目录（`Get-ChildItem -Recurse … -Directory -Filter opencv4`）落空，构建在 `opencv4 include dir not found under msvc-install\include` 处终止。
+* **根因**：`cmake/OpenCVInstallLayout.cmake` 里 `OPENCV_INCLUDE_INSTALL_PATH` 因 host 而异——Windows host 走 `elseif(WIN32 AND CMAKE_HOST_SYSTEM_NAME MATCHES Windows)` 分支，取 `include`，头文件由 `install(FILES … DESTINATION "${OPENCV_INCLUDE_INSTALL_PATH}/opencv2/…")` 直接落 `<prefix>\include\opencv2\…`；`opencv4` 这一层只在 UNIX / QNX 分支出现（`include\opencv4\opencv2\…`）。同一分支还决定 `OPENCV_CONFIG_INSTALL_PATH "."`、静态库落 `x64/<runtime>/staticlib`。
+* **规则**：定位 OpenCV 头文件根目录（`-I`）时**不要假设布局**——递归检索 `opencv_modules.hpp`（必位于 `opencv2\` 内）取其上一级目录作为 include 根，Windows / UNIX 两种布局通吃；检索为空即显式 `throw`，不要退化成"猜一个路径"。
+

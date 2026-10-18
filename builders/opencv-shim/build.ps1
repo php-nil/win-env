@@ -106,6 +106,16 @@ function Invoke-Configure {
         "-DBUILD_LIST=core,imgproc",
         # static OpenCV -> self-contained shim
         "-DBUILD_SHARED_LIBS=OFF",
+        # BUILD_LIST whitelists gapi off, but modules/gapi/cmake/init.cmake still
+        # runs during configure and creates the "ade" target, and
+        # ocv_install_target(... EXPORT OpenCVModules ...) exports it into the
+        # installed OpenCVModules.cmake -- while libade.a is never built. The gnu
+        # route consumes that very config via find_package, so the configure dies
+        # with "the imported target ade references ... libade.a but this file does
+        # not exist". WITH_ADE=OFF hits init.cmake's "if(NOT WITH_ADE) return()"
+        # first, so the target is never created and never exported. It cannot
+        # affect anything we build: gapi is already excluded above.
+        "-DWITH_ADE=OFF",
         # MinGW ships posix threads, and OpenCV's pthreads parallel_for option is
         # default ON and visible on MinGW (root CMakeLists: VISIBLE_IF NOT WIN32
         # OR MINGW), while the MinGW branch pushes pthread into OPENCV_LINKER_LIBS.

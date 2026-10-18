@@ -6,7 +6,8 @@
 > `KERNEL32.dll` + OS CRT（`msvcrt.dll`；ucrt 版工具链为 `ucrtbase.dll` +
 > `api-ms-win-*.dll`）的单文件 `opencv_shim.dll`，C++ 运行库由
 > `-static-libgcc -static-libstdc++` 静态链入、并关掉 pthreads 并行框架
-> （`-DWITH_PTHREADS_PF=OFF`，见 §3.1）以免拖出 `libwinpthread-1.dll`）。本文件保留 MSVC
+> （`-DWITH_PTHREADS_PF=OFF`，见 §3.1）以免拖出 `libwinpthread-1.dll`、同时关掉
+> 未被构建却被导出进安装 config 的 ade 目标（`-DWITH_ADE=OFF`，见 §4 第 2 步））。本文件保留 MSVC
 > 路线的技术依据与旗标，供需要 MSVC 调试链（PDB / ASan / VS）时对照。
 > 两条路线共用同一份 `builders/opencv-shim/opencv_shim.cpp`。
 
@@ -79,21 +80,38 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
 
    ```
    -DBUILD_LIST=core,imgproc -DBUILD_SHARED_LIBS=OFF -DOPENCV_DISABLE_THREAD_SUPPORT=ON
+   -DWITH_ADE=OFF
    ```
 
    （`BUILD_WITH_STATIC_CRT` 静态构建默认 ON，无需显式；**不要**加
    `-DWITH_PTHREADS_PF=ON`——MSVC 上 `HAVE_PTHREAD` 不成立，是空操作）
+
+   `-DWITH_ADE=OFF` 两条路线都加。`BUILD_LIST` 已把 gapi 白名单剔除，但
+   `modules/gapi/cmake/init.cmake` 在 configure 期仍会创建 `ade` 目标，并由
+   `ocv_install_target(... EXPORT OpenCVModules ...)` 写进安装出的
+   `OpenCVModules.cmake`——而 `libade.a`（gnu）/ `ade.lib`（msvc）从不构建。
+   gnu 路线用 `find_package` 消费该 config，会因 "the imported target ade
+   references … libade.a but this file does not exist" 直接 configure 失败；
+   `WITH_ADE=OFF` 在 `init.cmake` 的 `if(NOT WITH_ADE) return()` 处短路，目标彻底
+   消失，对已剔除的 gapi 无任何影响。msvc 路线不走 `find_package`（cl 直编），本不受
+   影响，加同一旗标仅为让两条路线的旗标集保持一致。
 3. shim 直编（不走 CMake；源文件自带 `__declspec(dllexport)`）：
 
    ```
-   cl /nologo /O2 /MT /EHsc /std:c++17 /LD builders\opencv-shim\opencv_shim.cpp /I<install>\include\opencv4 ^
-      /link /LIBPATH:<install>\lib opencv_core<ver>.lib opencv_imgproc<ver>.lib ^
+   cl /nologo /O2 /MT /EHsc /std:c++17 /LD builders\opencv-shim\opencv_shim.cpp /I<install include root> ^
+      /link /LIBPATH:<install lib dir> opencv_core<ver>.lib opencv_imgproc<ver>.lib ^
       /OUT:out-msvc\opencv_shim.dll
    ```
 
    lib 目录与文件名的版本后缀（`opencv_core4100.lib` → `...4110.lib` …）均由 job 内
-   glob 递归检索 `opencv_core*.lib` 后取得，不写死路径也不硬编码；
-   `<install>\include\opencv4` 是 `cmake --install` 的真实头文件布局。
+   glob 递归检索 `opencv_core*.lib` 后取得，不写死路径也不硬编码。
+   `-I` 指向**包含 `opencv2\` 的目录**（shim 用 `#include <opencv2/...>`）：
+   `cmake --install` 的头文件布局随 host 分支而变——Windows host 走
+   `OpenCVInstallLayout.cmake` 的 WIN32 分支，`OPENCV_INCLUDE_INSTALL_PATH=include`，
+   头文件直接落在 `<install>\include\opencv2\...`（**没有** `opencv4` 中间层，那是
+   UNIX 分支才有的）；UNIX host 才是 `<install>\include\opencv4\opencv2\...`。job 内
+   由递归检索到的 `opencv_modules.hpp`（必在 `opencv2\` 内）取其上一级目录作为
+   include 根，两种布局通吃，不再假设单一布局。
 4. 产物落 `out-msvc\opencv_shim.dll`，作为 `opencv_shim-msvc` artifact 上传。
 5. 验证闸门（job 内强制，全过才允许上传）：
 
