@@ -96,6 +96,9 @@ if (-not $Force -and (Test-Path $Gxx)) {
 } else {
     Write-Host "[setup] Resolving latest WinLibs MinGW-w64 release ..."
     $headers = @{ "User-Agent" = "win-env-setup-mingw" }
+    # CI 里带 GITHUB_TOKEN：匿名访问 api.github.com 仅 60 次/小时（按出口 IP 计，
+    # runner 共享 IP 极易 403 限流），认证后 1000 次/小时。本地无该变量时保持匿名直连。
+    if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
     $apiUrl  = "https://api.github.com/repos/brechtsanders/winlibs_mingw/releases/latest"
     $apiUrls = @()
     if (-not [string]::IsNullOrWhiteSpace($Mirror)) { $apiUrls += (Get-MirrorUrl $apiUrl) }

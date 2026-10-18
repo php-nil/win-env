@@ -285,3 +285,15 @@ if ($code -ne 0) { throw ... }
 * **根因**：`cmake/OpenCVInstallLayout.cmake` 里 `OPENCV_INCLUDE_INSTALL_PATH` 因 host 而异——Windows host 走 `elseif(WIN32 AND CMAKE_HOST_SYSTEM_NAME MATCHES Windows)` 分支，取 `include`，头文件由 `install(FILES … DESTINATION "${OPENCV_INCLUDE_INSTALL_PATH}/opencv2/…")` 直接落 `<prefix>\include\opencv2\…`；`opencv4` 这一层只在 UNIX / QNX 分支出现（`include\opencv4\opencv2\…`）。同一分支还决定 `OPENCV_CONFIG_INSTALL_PATH "."`、静态库落 `x64/<runtime>/staticlib`。
 * **规则**：定位 OpenCV 头文件根目录（`-I`）时**不要假设布局**——递归检索 `opencv_modules.hpp`（必位于 `opencv2\` 内）取其上一级目录作为 include 根，Windows / UNIX 两种布局通吃；检索为空即显式 `throw`，不要退化成"猜一个路径"。
 
+## 25. 手写 cl 链接静态 OpenCV 时，必须显式补齐其传递依赖（zlib / ole32）
+
+* **现象（2026-10 CI 实测，OpenCV 4.14.0 / MSVC 静态 core,imgproc）**：`cl ... /link opencv_core4140.lib opencv_imgproc4140.lib` 报 `LNK2019: unresolved external symbol __imp_CoCreateGuid`（`cv::tempfile`）、`gzputs`/`gzgets`/`gzrewind`/`gzeof`/`gzclose`/`gzopen`（`cv::FileStorage`），合计 `LNK1120: 7 unresolved externals`。
+* **根因**：静态 OpenCV 的链接不是"两个模块库"就够——`opencv_core` 还依赖内置 zlib（`FileStorage` 的 gz 系列）与系统库 ole32（`CoCreateGuid`）。走 `find_package` 时这些经模块的 `INTERFACE_LINK_LIBRARIES` 自动带上；绕过它手写 cl，就得自己列全。
+* **规则**：绕开 `find_package` 手写链接静态 OpenCV 时，必须补传递依赖：`zlib.lib`（OpenCV 内置 zlib 静态库，装在 `OPENCV_3P_LIB_INSTALL_PATH` = `<prefix>/x64/<rt>/staticlib`，**与模块库同一目录**，故共用同一个 `LIBPATH`，按 glob `zlib*.lib` 取实名）+ `ole32.lib`（Windows SDK 系统库，vcvars 的 LIBPATH 已覆盖）。任何"缺库"报错都以 LNK2019/LNK1120 形式出现，先从未解析符号判断它属于哪个库。
+
+## 26. CI 内查询 GitHub releases API 必须带 token，否则共享出口 IP 易 403
+
+* **现象（2026-10 CI 实测）**：`builders/opencv-shim/setup-mingw.ps1 -Mirror ''` 解析 WinLibs 最新 release 时，`Invoke-RestMethod` 对 `api.github.com` 返回 `(403) Forbidden`，"镜像与直连均不可用"，构建在解析阶段即终止。
+* **根因**：匿名访问 GitHub API 限额 60 次/小时且**按出口 IP 计**；GitHub 托管 runner 共享出口 IP，配额极易被同池其它 job 耗尽而 403——同一 workflow 里 `resolve` job 因带了 `secrets.GITHUB_TOKEN` 反而不受影响，恰好反证了这一点。
+* **规则**：凡是 CI 内调用 GitHub API 的步骤，都要经 `env:` 注入 `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`；脚本侧按"**存在该变量才**加 `Authorization: Bearer`"实现，保证本地匿名直连行为不变（见 [setup-mingw.ps1](../builders/opencv-shim/setup-mingw.ps1)）。
+

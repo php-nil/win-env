@@ -121,6 +121,13 @@ jobs:
 
       - name: Setup portable MinGW
         shell: powershell
+        env:
+          # The WinLibs release lookup hits api.github.com. Anonymous calls are capped
+          # at 60/h per IP, and GitHub-hosted runners share egress IPs, so the lookup
+          # intermittently 403s. The built-in token raises it to 1000/h.
+          # setup-mingw.ps1 only adds the Authorization header when this variable is
+          # present, so a local anonymous run is unchanged.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         # Empty mirror = straight from the official GitHub release. The script's
         # gh-proxy default is a convenience for local runs, not for CI.
         # Call it in-process with & (as build-rust.yml does), never via
@@ -350,13 +357,26 @@ jobs:
           $imgProcLib = (Get-ChildItem $staticLib -Filter 'opencv_imgproc*.lib' -ErrorAction SilentlyContinue |
                          Select-Object -First 1).Name
           if (-not $imgProcLib) { throw "opencv_imgproc*.lib not found in $staticLib" }
+          # A static core/imgproc build has two transitive deps that a hand-written cl
+          # link must list explicitly (find_package would have added them for us):
+          #   * zlib  -> FileStorage's gz* (gzopen/gzclose/gzgets/gzputs/gzrewind/gzeof).
+          #              OpenCV installs the bundled zlib.lib into the SAME
+          #              <prefix>\x64\<rt>\staticlib dir as the modules
+          #              (OPENCV_3P_LIB_INSTALL_PATH), globbed not hardcoded.
+          #   * ole32 -> CoCreateGuid (cv::tempfile in core/system.cpp). A Windows SDK
+          #              system lib, already on vcvars' LIBPATH.
+          # Skipping either shows up as LNK2019/LNK1120 unresolved externals.
+          $zlibLib = (Get-ChildItem $staticLib -Filter 'zlib*.lib' -ErrorAction SilentlyContinue |
+                      Select-Object -First 1).Name
+          if (-not $zlibLib) { throw "zlib*.lib not found in $staticLib - bundled zlib should install next to opencv_core" }
           Write-Host "includeDir = $includeDir"
           Write-Host "staticLib  = $staticLib"
           Write-Host "coreLib    = $coreLib"
           Write-Host "imgProcLib = $imgProcLib"
+          Write-Host "zlibLib    = $zlibLib"
           $cmd = 'call "' + $vcvars + '" >nul && cl /nologo /O2 /MT /EHsc /std:c++17 /LD builders\opencv-shim\opencv_shim.cpp' +
                  ' /I"' + $includeDir + '"' +
-                 ' /link /LIBPATH:"' + $staticLib + '" ' + $coreLib + ' ' + $imgProcLib +
+                 ' /link /LIBPATH:"' + $staticLib + '" ' + $coreLib + ' ' + $imgProcLib + ' ' + $zlibLib + ' ole32.lib' +
                  ' /OUT:"' + $PWD + '\out-msvc\opencv_shim.dll"'
           cmd /c $cmd
           if ($LASTEXITCODE -ne 0) { throw "shim compile failed: $LASTEXITCODE" }

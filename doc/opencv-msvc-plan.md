@@ -99,12 +99,20 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
 
    ```
    cl /nologo /O2 /MT /EHsc /std:c++17 /LD builders\opencv-shim\opencv_shim.cpp /I<install include root> ^
-      /link /LIBPATH:<install lib dir> opencv_core<ver>.lib opencv_imgproc<ver>.lib ^
+      /link /LIBPATH:<install staticlib> opencv_core<ver>.lib opencv_imgproc<ver>.lib zlib.lib ole32.lib ^
       /OUT:out-msvc\opencv_shim.dll
    ```
 
    lib 目录与文件名的版本后缀（`opencv_core4100.lib` → `...4110.lib` …）均由 job 内
    glob 递归检索 `opencv_core*.lib` 后取得，不写死路径也不硬编码。
+   **静态 core/imgproc 的传递依赖必须显式链接**（`find_package` 会自动带上，手写 cl 不会），
+   漏掉即报 LNK2019/LNK1120 unresolved external：
+   * `zlib.lib` —— `cv::FileStorage` 的 `gz*`（`gzopen`/`gzclose`/`gzgets`/`gzputs`/`gzrewind`/`gzeof`）。
+     OpenCV 把内置 zlib 静态库装到**与模块库同一目录**（`OPENCV_3P_LIB_INSTALL_PATH`
+     = `<prefix>/x64/<rt>/staticlib`），因此与 `opencv_core*.lib` 同目录、共用同一个 `LIBPATH`；
+     同样按 glob 取实名（`zlib*.lib`）。
+   * `ole32.lib` —— `CoCreateGuid`（core `system.cpp` 的 `cv::tempfile`）；Windows SDK 系统库，
+     vcvars 的 LIBPATH 已覆盖，直接写库名即可。
    `-I` 指向**包含 `opencv2\` 的目录**（shim 用 `#include <opencv2/...>`）：
    `cmake --install` 的头文件布局随 host 分支而变——Windows host 走
    `OpenCVInstallLayout.cmake` 的 WIN32 分支，`OPENCV_INCLUDE_INSTALL_PATH=include`，
