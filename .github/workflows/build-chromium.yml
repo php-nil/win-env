@@ -1,0 +1,84 @@
+name: Build Chromium (ungoogled)
+
+on:
+  workflow_dispatch:
+    inputs:
+      chromium_version:
+        description: 'Exact ungoogled-chromium-windows release tag, e.g. 155.0.8059.39-1.1 (Chromium version + ungoogled revision). Leave empty for the newest release carrying the x64 portable zip.'
+        required: false
+        default: ''
+      mirror_base:
+        description: 'Optional GitHub-release mirror base used for discovery and download, e.g. https://mirrors.ustc.edu.cn/github-release/ungoogled-software/ungoogled-chromium-windows (fast from mainland China). Leave empty for the official GitHub endpoint.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build chromium installer
+        id: build
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\builders\chromium\build.ps1 -ChromiumVersion '${{ inputs.chromium_version }}' -MirrorBase '${{ inputs.mirror_base }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "chromium version = ${{ steps.build.outputs.chromium_version }}"
+          Write-Host "Installer        = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: chromium-${{ steps.build.outputs.chromium_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: chromium-${{ steps.build.outputs.chromium_version }}
+          name: 'ungoogled-chromium ${{ steps.build.outputs.chromium_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json

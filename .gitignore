@@ -1,2 +1,9 @@
 # build working directory (downloads, staging, installers)
 /build/
+
+# opencv-shim build assets (builders\opencv-shim\setup-mingw.ps1 /
+# builders\opencv-shim\build.ps1 write these into the repo root on a local run)
+/tools/
+/opencv-src/
+/build-mingw/
+/mingw-install/

@@ -98,6 +98,51 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 * **规则**：GUI 模块 SFX 一律改用 **7z.exe** 解包——7z 能把 SFX 文件当作普通 `.7z` 归档直接读取，命令为 `7z x <file> "-o<stage>" -y -bb0`。7z 发现链：环境变量 `7Z` → `C:\Program Files\7-Zip\7z.exe` → PATH。GitHub windows runner 预装 7-Zip；workflow 步骤里补 Chocolatey 兜底（`choco install 7zip -y --no-progress --limit-output`）。
 * **别猜 exit code**：对未知原生命令，先确认它是控制台程序还是 GUI 程序再决定调用方式；GUI 程序 `$LASTEXITCODE` 永远不可靠。
 
+### 4.4 PowerShell 5 语法约束
+
+* 不支持 `&&` / `||`：顺序执行用 `;`，条件执行用 `if ($LASTEXITCODE -eq 0)`。
+* git 命令加 `$env:GIT_PAGER='cat'` 防分页挂起；git 的进度信息走 **stderr**（工具里显示为红色/Error 样式属正常），以 `git ls-remote` 等实际结果判断成败，不看颜色。
+
+### 4.5 EAP=Stop 下原生命令写 stderr 会变成终止错误
+
+* **现象**：`$ErrorActionPreference='Stop'` 的构建脚本里执行 `composer.phar --version`，命令明明退出码 0、输出正常，步骤却直接终止，报 `NativeCommandError`，内容只是 Composer 的信息行 `PHP version 8.5.11 (...)`。
+* **根因**：PS 5.1 在 EAP=Stop 时把原生命令的**任何 stderr 输出**都转成终止性 `NativeCommandError`（`2>&1` 合流也躲不开）；Composer 会向 stderr 打一行 PHP 版本提示。此前冒烟的 `php -v`、`nilpack --version` 不写 stderr，所以从未触发。
+* **规则**：对已知会写 stderr 的原生命令，调用点局部放宽 EAP 并显式接住退出码：
+
+```powershell
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$out = (& $exe --version 2>&1) -join "`n"
+$code = $LASTEXITCODE
+$ErrorActionPreference = $prevEap
+if ($code -ne 0) { throw ... }
+```
+
+### 4.6 `powershell -File` 外起进程时会丢掉空字符串实参
+
+* **现象**：workflow 想用 `powershell -ExecutionPolicy Bypass -File setup-mingw.ps1 -Mirror ''` 传"空镜像 = 直连 GitHub"，子进程却报 `Missing an argument for parameter 'Mirror'. Specify a parameter of type 'System.String' and try again.`，参数绑定直接失败；同一命令在当前会话内用 call 运算符调用（`& .\setup-mingw.ps1 -Mirror ''`）则正常拿到空字符串。
+* **根因（实测三种调用方式）**：PS 5.1 把实参拼成子进程命令行时，**空字符串实参被整体丢弃**（`''` 不产生任何 token），于是 `-Mirror` 后面没有值；`& <script> -Mirror ''`（会话内）与 `-Command "& ... -Mirror ''"` 都能正确保住空串。
+* **规则**：要给脚本传**空字符串**时，用会话内调用（`& <script> -Mirror ''`，本仓库 workflow 统一如此，见 build-rust.yml）；不要用 `powershell -File ...` 外起进程。若必须外起进程，把"空"表达成显式开关（如 `-Direct`）或干脆不传该参数。
+
+## 5. 网络与环境
+
+### 5.1 本机沙箱可能阻断 github.com，但 CI runner 不受影响
+
+* **现象**：本地 `Invoke-WebRequest https://github.com/...` 超时，而 `api.github.com` 可达。
+* **应急取物**：通过 API 资产端点下载（先 `repos/:o/:r/releases/tags/<tag>` 取 asset id，再请求 `repos/:o/:r/releases/assets/<id>` 并带 `Accept: application/octet-stream` 与 `User-Agent` 头），并核对字节数与 API 元数据一致。
+* **规则**：构建脚本的下载 URL 保持标准 `github.com/.../download/...`（runner 网络正常），不为本机网络加特殊分支。
+
+### 5.2 本机需要完整构建时用便携 ISCC，不污染系统
+
+* 从 choco API 下载 innosetup nupkg（zip），取出 `tools/innosetup-<ver>.exe`，以 `/VERYSILENT /CURRENTUSER /DIR=<repo>\build\cache\iscc` 安装到构建目录，再用 `$env:ISCC` 指向；build.ps1 按 `ISCC` 环境变量 → 标准安装目录 → PATH 的顺序查找。
+
+## 6. 安装器行为模式（复用基线）
+
+* 包内命令包装器固定模式：`"%~dp0php.exe" "%~dp0nilpack.phar" %*`，靠 `%~dp0` 自定位，与调用方 CWD 无关。需要写 Phar 的包装器（`nil.bat`）额外带 `-d phar.readonly=0`——PHP 默认 `phar.readonly=1`，不改 ini 也能让该次调用可写 Phar。
+* 安装目录相关配置用 `__APP_DIR__` 占位符写进文件，`CurStepChanged(ssPostInstall)` 时按 `{app}` 替换，改安装目录也不出错。
+* PATH 改写：按分号拆分、大小写不敏感比较、去空条目后幂等重写；安装追加、卸载精确删除自身条目。
+* 每次改 setup.iss 后必做：静默安装到**非默认目录** → 注册表 PATH + 裸命令验证 → 静默卸载 → 文件/PATH 双清零验证。
+
 ## 7. Inno Setup `VersionInfoVersion` 必须是纯数字四段
 
 * **现象**：ISCC 编译 Git 安装时报 "Value of [Setup] section directive VersionInfoVersion is invalid"，指向 `VersionInfoVersion={#MyAppVersion}`。
@@ -121,45 +166,6 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 ```
 
 * build.ps1 内部逻辑不变——只要 `$env:GITHUB_TOKEN` 非空就加 `Authorization: Bearer` 头。两个 workflow（Git / pnpm）都按此模式处理。
-
-### 4.4 PowerShell 5 语法约束
-
-* 不支持 `&&` / `||`：顺序执行用 `;`，条件执行用 `if ($LASTEXITCODE -eq 0)`。
-* git 命令加 `$env:GIT_PAGER='cat'` 防分页挂起；git 的进度信息走 **stderr**（工具里显示为红色/Error 样式属正常），以 `git ls-remote` 等实际结果判断成败，不看颜色。
-
-### 4.5 EAP=Stop 下原生命令写 stderr 会变成终止错误
-
-* **现象**：`$ErrorActionPreference='Stop'` 的构建脚本里执行 `composer.phar --version`，命令明明退出码 0、输出正常，步骤却直接终止，报 `NativeCommandError`，内容只是 Composer 的信息行 `PHP version 8.5.11 (...)`。
-* **根因**：PS 5.1 在 EAP=Stop 时把原生命令的**任何 stderr 输出**都转成终止性 `NativeCommandError`（`2>&1` 合流也躲不开）；Composer 会向 stderr 打一行 PHP 版本提示。此前冒烟的 `php -v`、`nilpack --version` 不写 stderr，所以从未触发。
-* **规则**：对已知会写 stderr 的原生命令，调用点局部放宽 EAP 并显式接住退出码：
-
-```powershell
-$prevEap = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$out = (& $exe --version 2>&1) -join "`n"
-$code = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
-if ($code -ne 0) { throw ... }
-```
-
-## 5. 网络与环境
-
-### 5.1 本机沙箱可能阻断 github.com，但 CI runner 不受影响
-
-* **现象**：本地 `Invoke-WebRequest https://github.com/...` 超时，而 `api.github.com` 可达。
-* **应急取物**：通过 API 资产端点下载（先 `repos/:o/:r/releases/tags/<tag>` 取 asset id，再请求 `repos/:o/:r/releases/assets/<id>` 并带 `Accept: application/octet-stream` 与 `User-Agent` 头），并核对字节数与 API 元数据一致。
-* **规则**：构建脚本的下载 URL 保持标准 `github.com/.../download/...`（runner 网络正常），不为本机网络加特殊分支。
-
-### 5.2 本机需要完整构建时用便携 ISCC，不污染系统
-
-* 从 choco API 下载 innosetup nupkg（zip），取出 `tools/innosetup-<ver>.exe`，以 `/VERYSILENT /CURRENTUSER /DIR=<repo>\build\cache\iscc` 安装到构建目录，再用 `$env:ISCC` 指向；build.ps1 按 `ISCC` 环境变量 → 标准安装目录 → PATH 的顺序查找。
-
-## 6. 安装器行为模式（复用基线）
-
-* 包内命令包装器固定模式：`"%~dp0php.exe" "%~dp0nilpack.phar" %*`，靠 `%~dp0` 自定位，与调用方 CWD 无关。需要写 Phar 的包装器（`nil.bat`）额外带 `-d phar.readonly=0`——PHP 默认 `phar.readonly=1`，不改 ini 也能让该次调用可写 Phar。
-* 安装目录相关配置用 `__APP_DIR__` 占位符写进文件，`CurStepChanged(ssPostInstall)` 时按 `{app}` 替换，改安装目录也不出错。
-* PATH 改写：按分号拆分、大小写不敏感比较、去空条目后幂等重写；安装追加、卸载精确删除自身条目。
-* 每次改 setup.iss 后必做：静默安装到**非默认目录** → 注册表 PATH + 裸命令验证 → 静默卸载 → 文件/PATH 双清零验证。
 
 ## 9. vc_redist.x64.exe 是 WiX Burn 包，解包用 dark.exe + msiexec /a
 
@@ -212,16 +218,7 @@ if ($code -ne 0) { throw ... }
   与之相对，`Source` 目录不存在（`No files found matching`）、`SetupIconFile` 缺失、`MessagesFile` 缺失、Pascal/压缩错误这些**能定位**的问题都会带 `on line N` 或具体值，可据此先分流。悬空**目录**链接（非环）与有效链接 ISCC 都能容忍（exit 0），别只凭"链接"二字下结论。
 * **规则**：暂存树交给 ISCC 前必须**不含任何重解析点**。build.ps1 在 xwin splat 之后、冒烟测试之前清理：枚举 `$StageDir` 下所有带 `ReparsePoint` 属性的条目并删除，随后复查确认为 0。**目录链接必须用 `[IO.Directory]::Delete($p, $false)` 非递归删除**——用 `Remove-Item -Recurse` 会顺着链接把目标（父目录）里的真实文件一起删掉。setup.iss 只用不带版本号的 `sdk\lib\...` 路径，这些版本别名对本包无用，删除无副作用。
 
-## 15. rustc 组件自带 rust-lld，`gcc-ld\lld-link.exe` 是按相对路径拉起它的包装器
-
-* **背景**：Rust MSVC 打包最初为拿到 `linker = "lld-link"`，从 LLVM 官方 Release 下载整个 Clang 包（约 250 MB）再用 7-Zip 解压提取 `lld-link.exe`——既慢又引入外部工具依赖，还硬编码了 LLVM 版本。
-* **事实（本地实测，直接查 rustc 组件 tar.gz）**：`rustc-<v>-x86_64-pc-windows-msvc.tar.gz` 内已含
-  * `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`——真正的多 flavor LLD 驱动（约 122 MB，全静态）；
-  * `...\bin\gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe`——极小的按名分派包装器（`lld-link.exe` 约 325 KB）。
-* **包装器行为**：`gcc-ld\lld-link.exe` **不是**自包含链接器，它按**自身所在目录的相对路径**去找并拉起 `rust-lld`。实测：在组件原始布局（包装器在 `...\bin\gcc-ld\`、驱动在 `...\bin\`）下 `lld-link.exe --version` 正常返回 `LLD <ver>`，带真实参数时报的是 `rust-lld: error: ...`（证明子进程已跑起来）；把它单独拷到别的目录（或拷到 `bin\` 而不带驱动）即报 `lld-wrapper: error running rust-lld child process: 系统找不到指定的文件。 (os error 2)`。
-* **规则**：直接用 rustc 自带的 LLD——cargo 的 `linker` 指向**安装目录内** `lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe` 的绝对路径，且**必须保持组件原始相对布局**（不要单独搬运 `lld-link.exe`）。如此可彻底移除 LLVM 下载、7-Zip 依赖与硬编码版本，且 LLD 版本与 rustc 天然一致。冒烟测试**就地**调用该包装器 `--version`，即可顺带证明 `rust-lld` 子进程可被发现。
-
-## 16. rustfmt / clippy 的组件名带 `-preview`，归档文件名不带
+## 15. rustfmt / clippy 的组件名带 `-preview`，归档文件名不带
 
 * **现象**：给 Rust 包补 rustfmt / clippy 时，按 `pkg.rustfmt` / `pkg.clippy` 去 channel TOML 里找组件节，**两个都搜不到**（全文无匹配）；若按"组件名"拼下载 URL（例如 pinned 版本重建 `rustfmt-preview-<ver>-<target>.tar.gz`），下载必然 404。
 * **事实（拉真实样本实测：2026-10-15 的 `channel-rust-stable.toml` + 两个组件归档 `tar -tzf` / `manifest.in`）**：
@@ -229,3 +226,50 @@ if ($code -ne 0) { throw ... }
   * 同一节 `url` 值指向的文件名却是 `rustfmt-1.99.1-x86_64-pc-windows-msvc.tar.gz`、`clippy-1.99.1-x86_64-pc-windows-msvc.tar.gz`，**不带 `-preview`**；
   * 归档内层：版本目录 → 组件目录（名字 **= 组件名**，即 `rustfmt-preview/`、`clippy-preview/`）→ `bin\rustfmt.exe`、`bin\cargo-fmt.exe` / `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者的 `manifest.in` 都同时列出 `*.pdb`，说明**全量拷贝组件目录 = 官方安装内容**（官方也装这些 PDB）。
 * **规则**：组件表把"**解析键 / 内层合并目录名**（带 `-preview`）"与"**归档文件名前缀**（不带 `-preview`）"分成两个字段分别存放（本仓库为 `Name` 与 `FileStem`），重建 URL 只用后者，否则 404 或合并目录取空（fallback 会多套一层）。rustfmt / clippy 的全部可执行文件都落在 `bin\`（`cargo fmt` / `cargo clippy` 靠 PATH 找 `cargo-fmt.exe` / `cargo-clippy.exe`），因此必须与 `cargo.exe` 同处 `bin\`——即加入系统 PATH 的那个目录。按此规则补组件后，`[Files]` 源树自然包含它们，安装器无需额外改动。
+
+## 16. Rust channel TOML 的 per-target 组件节是双括号数组表，单括号匹配会漏解析
+
+* **现象**：解析 `channel-rust-stable.toml` 取各组件（`rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview`）的 per-target 下载 URL 时，若按 `[pkg.<name>.target.<target>]` 单括号节名匹配，**一个 URL 都取不到**，脚本随即以"解析为空"终止。
+* **根因**：PS 5.1 无内置 TOML 解析器，需自行按行扫描；而官方 channel TOML 里 per-target 组件节用的是 **`[[...]]` 双括号数组表**语法（如 `[[pkg.rustc.target.x86_64-pc-windows-msvc]]`），顶层 `date`、`[pkg.rust]` 等才是单括号表。只认单括号就会与双括号节名擦肩而过，解析结果为空。
+* **规则**：按行跟踪"当前节"，节名匹配用 `^\[+(.+?)\]+$` 一次性吃掉 `[` 与 `[[`（剥掉全部方括号得到节路径），再据路径取字段。取组件名要用**节路径**而非 `$Matches[0]`——后续行内的 `url = "..."` 正则会把 `$Matches` 覆盖成 URL 行。实现见 `builders/rust/build.ps1` 第 1 节的解析循环。
+
+## 17. postgresql.org versions.json 的主版本号是裸数字，`[version]` 直接转换会抛错
+
+* **现象**：PostgreSQL 包按"最高 supported 主版本"选版本时，`Sort-Object { [version]$_.major }` 抛 `Cannot convert value "14" to type "System.Version". Error: "Version string portion was too short or too long."`，构建立刻在发现阶段终止。
+* **根因**：`versions.json` 的 `major` 在 10 及以上是**裸主版本号**（`"14"`、`"18"`），10 以下才是点分形式（`"6.3"`、`"7.4"`）；而 `System.Version` 要求至少 `major.minor` 两段。`latestMinor` 同样是裸 minor（`"6"`），完整版本号必须自行拼成 `<major>.<latestMinor>`。
+* **规则**：解析上游版本字段前先拉真实样本核对形态（见 §16 同类教训）。本仓库 `builders/postgres/build.ps1` 用 `ConvertTo-MajorVersion` 补齐第二段（不足两段补 `'0'`）后再 `[version]`；凡"裸数字主版本号"都按此处理，不要直接丢给 `[version]`。
+
+## 18. PostgreSQL Windows 二进制：URL 可构造，下载页不可机器解析
+
+* **事实（2026-10 实测，含 HTTP Range + .NET `ZipArchive` 读远端中央目录）**：
+  * `https://get.enterprisedb.com/postgresql/postgresql-<ver>-<rev>-windows-x64-binaries.zip` **可直接构造**：14.24-1 / 15.19-1 / 16.15-1 / 17.11-1 / 18.6-1 全部 `200`，344 MB 量级；`<rev>` 是 EDB 对同一版本的重新构建序号，从 1 起向上探测。
+  * 版本发现走官方 <https://www.postgresql.org/versions.json>（`supported` / `current` / `latestMinor`，机器可读）。EDB 的下载页（`enterprisedb.com/download-postgresql-binaries`、`/downloads/...`）**没有可解析的直链**，只有 `getfile.jsp?fileid=…` 不透明链接 → 不能作为发现入口。
+  * 官方 zip 顶层唯一根目录 `pgsql/`（21,968 条目，raw 913.6 MB / 压缩 339.0 MB）；`pgAdmin 4/` 一项就占压缩体积 **274.5 MB（整包的 ~81%）**，是本仓库裁剪的最大单项。
+  * **zip 内不含任何 CRT DLL**（`vcruntime140.dll` / `msvcp140.dll` 全 missing）→ 必须 app-local 注入，复用 [doc/php-8.5.md](php-8.5.md) 已验证的 vc_redist 提取链路。
+* **规则**：`versions.json`（PostgreSQL 项目维护）领先 EDB 发布（Windows 二进制滞后）——某 minor 的 rev 1..3 全 404 时按 **minor 递减**重试，全部失败即 `throw`，绝不猜 URL。裁剪后必须对真实解压树做白名单断言（删多了比删少了更隐蔽）。
+
+## 19. `--locale-provider` / builtin 是 PG 17 才有的，决定 initdb 默认参数
+
+* **事实**：官方 PG 16 initdb 文档只列 `libc` / `icu` 两个 locale provider，且**没有** `--builtin-locale`；`builtin` provider 与 `--builtin-locale` 是 **PG 17 引入**。PG 16 及更早，locale 由 libc 派生编码（中文 Windows 上会派生出 GBK 类编码与不稳定排序，导致跨机器 dump/restore 不可复现）。
+* **规则**：需要"UTF8 + 与宿主 locale 无关的确定性排序"的集群默认值时，版本下限必须定在 **PG 17**；`build.ps1` 在**下载前**按主版本号下限报错终止（不浪费 340 MB 下载），组装后再用 `initdb --help` 复核 `--builtin-locale` 确实存在，避免产出"行为随宿主 locale 变化"的包。
+
+## 20. 禁止直接运行 `postgres.exe`，但 `pg_ctl` / `initdb` 在管理员终端下可用
+
+* **现象（源码核实）**：`src/backend/main/main.c` 的 `check_root()` 在 WIN32 分支调用 `pgwin32_is_admin()`（`src/port/win32security.c`：令牌含 Administrators **或 PowerUsers** 即判为管理员）并直接 FATAL：`Execution of PostgreSQL by a user with administrative permissions is not permitted`。
+* **根因**：Windows 上 PostgreSQL 不允许以管理员令牌运行 postmaster。
+* **规则**：管理脚本只能经 `pg_ctl.exe` / `initdb.exe` 调起（它们会以**受限令牌**重新执行 postmaster），**绝不直接调用 `postgres.exe`**；因此管理员/提权终端（含 GitHub runner 的管理员令牌）下 `pg-start` 仍可正常工作，无需 `schtasks /ru` 委派这类绕行方案。
+
+## 21. EDB Windows 二进制的头文件是扁平布局（`include\server\...`），不是 `include\postgresql\server\...`
+
+* **现象（2026-10 实测）**：白名单断言 `include\postgresql\server\postgres.h` 失败（`Required file missing after trimming`），实际 EDB zip 的解压树是 `include\server\postgres.h`、`include\internal\`、`include\libpq\`，`include\` 下**没有** `postgresql\` 这一层。
+* **根因**：Unix 的 `make install` 会把头文件装到 `$INCLUDEDIR/postgresql/...`，而 EDB 的 Windows MSVC 构建直接把 `src/include` 的目录平铺进 `include\`（`pg_config --includedir-server` 亦指向该扁平目录）。
+* **规则**：断言/引用 PG 头文件路径时以**真实解压树**为准（先下载真实样本再写断言，别照搬 Unix 布局）；本仓库用 `include\server\postgres.h` 作为"开发头文件在位"的哨兵文件。
+
+## 22. `initdb -D <dir>` 要求目标目录"不存在或为空"，管理脚本不得预建 `data\`
+
+* **现象（2026-10 安装闭环实测）**：安装后的 `pg-start` 首次启动初始化失败，`initdb` 报
+  `initdb: 错误: 目录 "…\data" 已存在，但不为空`（exit 1），首次启动直接卡死。
+* **根因**：`pg-start` 在调 `initdb` 之前先 `mkdir "%DATA%\logs"` 并把口令临时文件写到 `%DATA%\win-env.pw.tmp`，使 `-D` 目标目录**非空**；而 `initdb` 明确拒绝"已存在且非空"的目标目录（受控实验：**空目录 exit 0，含任意 1 个文件的目录 exit 1**）。
+* **为何没被暂存冒烟测试拦下**：冒烟测试用**独立的 scratch 目录**（`build/cache/pgsmoke`）、且直接调用 `initdb.exe`，不走管理脚本里"先建目录再 initdb"的那段逻辑，因此这条路径漏检；只有**真机静默安装 → 裸命令首次 `pg-start`** 才暴露。教训：管理脚本自身的逻辑要在**安装后的真实路径**上验证，不能只靠暂存树冒烟。
+* **规则**：管理脚本初始化集群时，`-D` 目标目录**只允许为空**——先只 `mkdir "%DATA%"`（或干脆不建、让 `initdb` 自建），口令临时文件一律放 `%TEMP%`，`logs\` 及其它运行期文件都在 `initdb` 成功**之后**才创建。
+

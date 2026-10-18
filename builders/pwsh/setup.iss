@@ -1,4 +1,4 @@
-﻿;
+;
 ; win-env - PowerShell 7 one-click installer for Windows x64
 ;
 ; Compiled by builders/pwsh/build.ps1 via ISCC.exe with these defines:
@@ -39,7 +39,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/max
 ; A 128 MB dictionary is the largest this (32-bit) ISCC encoder accepts —
-; 256 MB fails with LZMA_Encode code 5 (param/memory). The ~280 MB staged
+; 256 MB fails with LZMA_Encode code 5 (param/memory). The ~245 MB staged
 ; tree therefore spans multiple solid blocks; accepted as the cost of a
 ; self-contained .NET runtime.
 LZMADictionarySize=131072

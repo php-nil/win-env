@@ -28,7 +28,7 @@
 #ifndef SdkUmPath
   #define SdkUmPath "sdk\\lib\\um\\x86_64"
 #endif
-// SdkVcPath may be empty if the VC runtime lib dir was not found.
+; SdkVcPath may be empty if the VC runtime lib dir was not found.
 #ifndef SdkVcPath
   #define SdkVcPath "crt\\lib\\x86_64"
 #endif
@@ -40,6 +40,7 @@
 #endif
 
 [Setup]
+; A fixed AppId makes upgrades/reinstalls replace the same installation.
 AppId={{7E3B9A2D-4C5F-4E8A-B1D6-9F0A3C7E2B51}
 AppName=Rust (MSVC)
 AppVersion={#MyAppVersion}
@@ -52,6 +53,9 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/max
+; A 128 MB dictionary is the largest this (32-bit) ISCC encoder accepts; 256 MB
+; fails with LZMA_Encode code 5. The staged rustc + SDK tree is larger, so it
+; spans multiple solid blocks.
 LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern

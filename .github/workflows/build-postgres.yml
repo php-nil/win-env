@@ -1,0 +1,82 @@
+name: Build PostgreSQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      pg_version:
+        description: 'Exact PostgreSQL version as <major>.<minor>, e.g. 18.6. Leave empty for the latest supported major in the official postgresql.org versions.json.'
+        required: false
+        default: ''
+      pg_major:
+        description: 'Major version track for auto-discovery, e.g. 18 (>= 17 required). Leave empty for the highest supported major. Ignored when pg_version is set.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build PostgreSQL installer
+        id: build
+        shell: powershell
+        run: |
+          & .\builders\postgres\build.ps1 -PgVersion '${{ inputs.pg_version }}' -PgMajor '${{ inputs.pg_major }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "postgres version = ${{ steps.build.outputs.pg_version }}"
+          Write-Host "Installer        = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: postgres-${{ steps.build.outputs.pg_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: postgres-${{ steps.build.outputs.pg_version }}
+          name: 'PostgreSQL ${{ steps.build.outputs.pg_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json

@@ -1,0 +1,371 @@
+# build-opencv-shim.yml
+#
+# Manually package opencv_shim.dll for BOTH toolchains:
+#   gnu  : MinGW static OpenCV (current delivery route)  -> self-contained shim
+#          (imports only KERNEL32.dll + the OS CRT: msvcrt.dll for the msvcrt toolchain
+#          flavour, ucrtbase.dll + api-ms-win-crt-*.dll for the ucrt one). Reuses
+#          builders/opencv-shim/setup-mingw.ps1 and builders/opencv-shim/build.ps1.
+#   msvc : static OpenCV (/MT, OPENCV_DISABLE_THREAD_SUPPORT=ON) + cl /MT shim
+#          (doc/opencv-msvc-plan.md) -> single-file shim, zero runtime deps.
+#
+# Trigger: Actions -> "Build OpenCV Shim" -> Run workflow (choose route + version).
+#   Version is never hardcoded: leave it empty to resolve the latest OpenCV 4.x tag
+#   from the GitHub tags API (5.x is never picked), or pin one explicitly.
+# Artifacts: opencv_shim-gnu / opencv_shim-msvc (each contains opencv_shim.dll).
+# NOTE: this workflow only produces raw DLL artifacts (no installer); the gates
+# documented in doc/opencv-msvc-plan.md are enforced in-job before upload.
+
+name: Build OpenCV Shim
+
+on:
+  workflow_dispatch:
+    inputs:
+      route:
+        description: 'Which shim to build: both, gnu (MinGW static OpenCV), msvc (cl /MT static OpenCV).'
+        required: false
+        type: choice
+        default: both
+        options: [both, gnu, msvc]
+      opencv_version:
+        description: 'OpenCV version, 4.x only, e.g. 4.10.0 (5.x may break the C API / cmake flags). Leave empty for the latest 4.x release tag.'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  # Resolved once so both routes share the same version, download URL and source cache.
+  resolve:
+    name: Resolve OpenCV version
+    runs-on: windows-latest
+    outputs:
+      opencv_version: ${{ steps.version.outputs.opencv_version }}
+    steps:
+      - name: Resolve OpenCV version (explicit input or latest 4.x tag)
+        id: version
+        shell: powershell
+        env:
+          # GitHub tags API 需要 GITHUB_TOKEN 提高速率限额（匿名 60 req/h → 认证 1000 req/h）。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = '${{ inputs.opencv_version }}'
+          if (-not $v) {
+            $headers = @{ 'User-Agent' = 'win-env'; 'Accept' = 'application/vnd.github+json' }
+            if ($env:GITHUB_TOKEN) { $headers['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+            $tags = (Invoke-RestMethod -Uri 'https://api.github.com/repos/opencv/opencv/tags?per_page=100' -Headers $headers).name
+            # Only plain 4.x.y tags qualify: 5.x pre-releases and vendor suffixed
+            # tags (4.10.0-kleidicv) must never win. Empty result aborts loudly
+            # instead of guessing a URL.
+            $v = $tags |
+                 Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
+                 Where-Object { [version]$_ -ge [version]'4.0.0' -and [version]$_ -lt [version]'5.0.0' } |
+                 Sort-Object -Property { [version]$_ } -Descending |
+                 Select-Object -First 1
+            if (-not $v) { throw 'no OpenCV 4.x release tag found in the GitHub tags API' }
+          }
+          Write-Host "opencv version = $v"
+          "opencv_version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+
+  gnu:
+    name: Build shim (MinGW route)
+    needs: resolve
+    if: inputs.route == 'gnu' || inputs.route == 'both'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      OPENCV_VERSION: ${{ needs.resolve.outputs.opencv_version }}
+      # Derived URL from the resolved version — avoids duplicating the version string.
+      OPENCV_URL: 'https://github.com/opencv/opencv/archive/refs/tags/${{ needs.resolve.outputs.opencv_version }}.zip'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Cache OpenCV source
+        uses: actions/cache@v6
+        with:
+          path: opencv-src
+          # Shared with the msvc route: the source archive is identical for both.
+          key: opencv-src-${{ needs.resolve.outputs.opencv_version }}
+
+      - name: Fetch OpenCV source (cache miss only)
+        shell: powershell
+        run: |
+          if (-not (Test-Path "opencv-src\opencv-$env:OPENCV_VERSION\CMakeLists.txt")) {
+            Invoke-WebRequest -Uri $env:OPENCV_URL -OutFile opencv.zip
+            7z x opencv.zip -oopencv-src -y | Out-Null
+            Remove-Item opencv.zip
+          }
+
+      - name: Cache portable MinGW (tools\mingw64)
+        uses: actions/cache@v6
+        with:
+          path: tools/mingw64
+          key: winlibs-mingw64-1
+
+      - name: Cache OpenCV build tree (incremental)
+        uses: actions/cache@v6
+        with:
+          path: build-mingw
+          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v1
+
+      - name: Setup portable MinGW
+        shell: powershell
+        # Empty mirror = straight from the official GitHub release. The script's
+        # gh-proxy default is a convenience for local runs, not for CI.
+        # Call it in-process with & (as build-rust.yml does), never via
+        # "powershell -File": PS 5.1 drops an empty-string argument when it builds
+        # the child's command line, so `-File ... -Mirror ''` dies with
+        # "Missing an argument for parameter 'Mirror'" before the script even runs.
+        run: |
+          & .\builders\opencv-shim\setup-mingw.ps1 -Mirror ''
+
+      - name: Install Ninja (build.ps1 requires it)
+        shell: powershell
+        run: python -m pip install ninja --disable-pip-version-check
+
+      - name: Build OpenCV (MinGW) + shim
+        shell: powershell
+        run: |
+          # Call it in-process with & like every other builder workflow
+          # (build-rust.yml etc.) -- same reason as the Setup step above: the
+          # `powershell -File` form would drop any empty-string argument.
+          & .\builders\opencv-shim\build.ps1 -Stage all `
+            -OpenCvSrc  "$PWD\opencv-src\opencv-$env:OPENCV_VERSION" `
+            -BuildDir   "$PWD\build-mingw" `
+            -InstallDir "$PWD\mingw-install" `
+            -MinGwBin   "$PWD\tools\mingw64\bin" `
+            -Jobs 4
+          if ($LASTEXITCODE -ne 0) { throw "mingw build failed: $LASTEXITCODE" }
+
+      - name: Stage shim to out-gnu
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force out-gnu | Out-Null
+          # shim lands in <BuildDir>\shim\ (build.ps1 Invoke-Shim),
+          # NOT in mingw-install (that's only OpenCV libs).
+          $src = Get-ChildItem -Recurse "$PWD\build-mingw" -Filter opencv_shim.dll |
+                 Select-Object -First 1
+          if (-not $src) { throw 'opencv_shim.dll not found under build-mingw after shim stage' }
+          Copy-Item $src.FullName out-gnu\
+          Write-Host "staged from $($src.FullName)"
+
+      - name: Gate - dependency closure (KERNEL32 + OS CRT only, no C++ runtime)
+        shell: powershell
+        run: |
+          $deps = & "$PWD\tools\mingw64\bin\objdump.exe" -p out-gnu\opencv_shim.dll |
+            Select-String 'DLL Name:' | ForEach-Object { $_.Line -replace '.*DLL Name:\s*', '' } |
+            Sort-Object -Unique
+          Write-Host "imports: $($deps -join ', ')"
+          # Allowed: KERNEL32 plus the toolchain's own OS CRT. setup-mingw.ps1 accepts
+          # whichever flavour WinLibs publishes for x86_64-posix-seh, and the current
+          # releases only ship the ucrt one (ucrtbase.dll + api-ms-win-crt-*.dll); the
+          # older msvcrt flavour imports msvcrt.dll instead. Anything C++ (libstdc++-6.dll,
+          # libgcc_s_seh-1.dll) or OpenCV would mean the single-file contract is broken.
+          $allowed = @('KERNEL32.dll', 'msvcrt.dll', 'ucrtbase.dll')
+          $bad = $deps | Where-Object { $allowed -notcontains $_ -and $_ -notmatch '^api-ms-win-' }
+          if ($bad) { throw "unexpected imports: $($bad -join ', ') (shim must stay self-contained)" }
+
+      - name: Gate - single export (shim_match_template only)
+        shell: powershell
+        run: |
+          # The FFI contract is a one-function C surface, so assert it here too
+          # (the msvc route does the same with dumpbin /EXPORTS).
+          $out = & "$PWD\tools\mingw64\bin\objdump.exe" -p out-gnu\opencv_shim.dll
+          $header = $out | Select-String '\[Ordinal/Name Pointer\] Table' | Select-Object -First 1
+          if (-not $header) { throw 'no export name table found in opencv_shim.dll' }
+          $names = $out[($header.LineNumber)..($out.Count - 1)] |
+            ForEach-Object { if ($_ -match '^\s*\[\s*\d+\]\s+(\S+)\s*$') { $Matches[1] } }
+          Write-Host "exports: $($names -join ', ')"
+          if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
+            throw "expected exactly one export 'shim_match_template', got: $($names -join ', ')"
+          }
+
+      - name: Upload artifact (gnu)
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencv_shim-gnu
+          path: out-gnu/opencv_shim.dll
+          if-no-files-found: error
+
+  msvc:
+    name: Build shim (MSVC route)
+    needs: resolve
+    if: inputs.route == 'msvc' || inputs.route == 'both'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      OPENCV_VERSION: ${{ needs.resolve.outputs.opencv_version }}
+      # Derived URL from the resolved version — avoids duplicating the version string.
+      OPENCV_URL: 'https://github.com/opencv/opencv/archive/refs/tags/${{ needs.resolve.outputs.opencv_version }}.zip'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Cache OpenCV source
+        uses: actions/cache@v6
+        with:
+          path: opencv-src
+          # Shared with the gnu route: the source archive is identical for both.
+          key: opencv-src-${{ needs.resolve.outputs.opencv_version }}
+
+      - name: Fetch OpenCV source (cache miss only)
+        shell: powershell
+        run: |
+          if (-not (Test-Path "opencv-src\opencv-$env:OPENCV_VERSION\CMakeLists.txt")) {
+            Invoke-WebRequest -Uri $env:OPENCV_URL -OutFile opencv.zip
+            7z x opencv.zip -oopencv-src -y | Out-Null
+            Remove-Item opencv.zip
+          }
+
+      - name: Cache OpenCV build tree (incremental)
+        uses: actions/cache@v6
+        with:
+          path: build-msvc
+          key: opencv-msvc-build-${{ needs.resolve.outputs.opencv_version }}-v1
+
+      - name: Install Ninja
+        shell: powershell
+        run: python -m pip install ninja --disable-pip-version-check
+
+      - name: Locate vcvars64.bat (vswhere)
+        id: vcvars
+        shell: powershell
+        run: |
+          # Must use double-quoted string so "${env:ProgramFiles(x86)}" expands!
+          # Single quotes in PowerShell suppress variable expansion entirely.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw 'no VS with x64 C++ tools found' }
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw "vcvars64 not found at $vcvars" }
+          Write-Host "vcvars64 = $vcvars"
+          "path=$vcvars" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8
+
+      - name: Build OpenCV (MSVC, static /MT, no thread support)
+        shell: powershell
+        run: |
+          $v = $env:OPENCV_VERSION
+          $vcvars = '${{ steps.vcvars.outputs.path }}'
+          $flags = @(
+            '-DCMAKE_BUILD_TYPE=Release',
+            "-DCMAKE_INSTALL_PREFIX=$PWD\msvc-install",
+            '-DCMAKE_POLICY_VERSION_MINIMUM=3.5',
+            '-DBUILD_LIST=core,imgproc',
+            '-DBUILD_SHARED_LIBS=OFF',
+            '-DOPENCV_DISABLE_THREAD_SUPPORT=ON',
+            '-DBUILD_TESTS=OFF', '-DBUILD_PERF_TESTS=OFF', '-DBUILD_EXAMPLES=OFF',
+            '-DBUILD_opencv_apps=OFF', '-DBUILD_DOCS=OFF', '-DBUILD_JAVA=OFF',
+            '-DBUILD_opencv_python2=OFF', '-DBUILD_opencv_python3=OFF',
+            '-DBUILD_opencv_java_bindings_generator=OFF',
+            '-DBUILD_opencv_python_bindings_generator=OFF',
+            '-DBUILD_opencv_js_bindings_generator=OFF',
+            '-DBUILD_opencv_objc_bindings_generator=OFF',
+            '-DWITH_PNG=OFF', '-DWITH_JPEG=OFF', '-DWITH_TIFF=OFF', '-DWITH_WEBP=OFF',
+            '-DWITH_OPENJPEG=OFF', '-DWITH_JASPER=OFF', '-DWITH_OPENEXR=OFF',
+            '-DWITH_IMGCODEC_HDR=OFF', '-DWITH_IMGCODEC_SUNRASTER=OFF',
+            '-DWITH_IMGCODEC_PXM=OFF', '-DWITH_IMGCODEC_PFM=OFF',
+            '-DWITH_IPP=OFF', '-DWITH_ITT=OFF', '-DWITH_OPENCL=OFF',
+            '-DWITH_OPENCLAMDBLAS=OFF', '-DWITH_OPENCLAMDFFT=OFF',
+            '-DWITH_TBB=OFF', '-DWITH_EIGEN=OFF', '-DWITH_LAPACK=OFF',
+            '-DWITH_FFMPEG=OFF', '-DWITH_1394=OFF', '-DWITH_DSHOW=OFF',
+            '-DWITH_MSMF=OFF', '-DWITH_GSTREAMER=OFF', '-DWITH_QUIRC=OFF',
+            '-DWITH_PROTOBUF=OFF', '-DBUILD_PROTOBUF=OFF',
+            '-DWITH_OPENVX=OFF', '-DWITH_VA=OFF', '-DWITH_VA_INTEL=OFF',
+            '-DWITH_OBSENSOR=OFF',
+            '-DCPU_BASELINE=SSE4_2', '-DCPU_DISPATCH=',
+            '-DOPENCV_GENERATE_PKGCONFIG=OFF',
+            '-DOPENCV_GENERATE_SETUPVARS=OFF',
+            '-DENABLE_CONFIG_VERIFICATION=OFF'
+          ) -join ' '
+          $cmd = 'call "' + $vcvars + '" >nul && ' +
+                 'cmake -S "' + $PWD + '\opencv-src\opencv-' + $v + '" -B "' + $PWD + '\build-msvc" -G Ninja ' + $flags +
+                 ' && cmake --build "' + $PWD + '\build-msvc" --config Release' +
+                 ' && cmake --install "' + $PWD + '\build-msvc"'
+          cmd /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "msvc opencv build failed: $LASTEXITCODE" }
+          # Debug: show include layout + lib filenames so version bumps are visible.
+          Write-Host '--- include tree ---'
+          Get-ChildItem -Recurse "$PWD\msvc-install\include" -Filter opencv_modules.hpp |
+            ForEach-Object { $_.FullName }
+          Write-Host '--- lib tree ---'
+          Get-ChildItem -Recurse "$PWD\msvc-install" -Filter opencv_*.lib |
+            ForEach-Object { $_.FullName }
+
+      - name: Compile shim (cl /MT /std:c++17) - link success IS the C-API gate
+        shell: powershell
+        run: |
+          $vcvars = '${{ steps.vcvars.outputs.path }}'
+          New-Item -ItemType Directory -Force out-msvc | Out-Null
+          # OpenCV 4.x cmake --install produces <prefix>/include/opencv4/opencv2/...
+          # (NOT <prefix>/include/opencv2/...). shim.cpp uses #include <opencv2/...>
+          # so -I must point at the opencv4 directory.
+          $includeDir = (Get-ChildItem -Recurse "$PWD\msvc-install\include" -Directory -Filter opencv4 |
+                         Select-Object -First 1).FullName
+          if (-not $includeDir) { throw "opencv4 include dir not found under msvc-install\include" }
+          # Locate the lib dir by search instead of hardcoding <prefix>\lib: a static
+          # CMake install does use <prefix>\lib\ (not the prebuilt package's
+          # x64\vc17\staticlib), but a layout change must fail loudly here rather
+          # than surface as a confusing unresolved-symbol link error.
+          $coreLibFile = Get-ChildItem -Recurse "$PWD\msvc-install" -Filter 'opencv_core*.lib' -ErrorAction SilentlyContinue |
+                         Select-Object -First 1
+          if (-not $coreLibFile) { throw 'opencv_core*.lib not found under msvc-install — check cmake --install output' }
+          $staticLib = $coreLibFile.DirectoryName
+          # Glob for lib names — version suffix changes per release
+          # (opencv_core4100.lib / opencv_core4110.lib / ...), never hardcode.
+          $coreLib = $coreLibFile.Name
+          $imgProcLib = (Get-ChildItem $staticLib -Filter 'opencv_imgproc*.lib' -ErrorAction SilentlyContinue |
+                         Select-Object -First 1).Name
+          if (-not $imgProcLib) { throw "opencv_imgproc*.lib not found in $staticLib" }
+          Write-Host "includeDir = $includeDir"
+          Write-Host "staticLib  = $staticLib"
+          Write-Host "coreLib    = $coreLib"
+          Write-Host "imgProcLib = $imgProcLib"
+          $cmd = 'call "' + $vcvars + '" >nul && cl /nologo /O2 /MT /EHsc /std:c++17 /LD builders\opencv-shim\opencv_shim.cpp' +
+                 ' /I"' + $includeDir + '"' +
+                 ' /link /LIBPATH:"' + $staticLib + '" ' + $coreLib + ' ' + $imgProcLib +
+                 ' /OUT:"' + $PWD + '\out-msvc\opencv_shim.dll"'
+          cmd /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "shim compile failed: $LASTEXITCODE" }
+
+      - name: Gate - dependency closure (allow api-ms-win base, deny CRT/UCRT/concrt/opencv)
+        shell: powershell
+        run: |
+          $vcvars = '${{ steps.vcvars.outputs.path }}'
+          $out = cmd /c 'call "' + $vcvars + '" >nul && dumpbin /DEPENDENTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          # dumpbin /DEPENDENTS indents each DLL name with 4+ spaces;
+          # be tolerant of any indentation so we don't silently miss imports.
+          $deps = $out | Select-String '^\s+(\S+\.dll)\s*$' |
+                  ForEach-Object { $_.Matches[0].Groups[1].Value } |
+                  Sort-Object -Unique
+          Write-Host "imports: $($deps -join ', ')"
+          # /MT should give us KERNEL32 (+ possibly api-ms-win-core-* base on Win10+).
+          # Anything CRT / OpenCV / concrt leaks is a real problem.
+          $deny = 'VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_'
+          $bad = $deps | Where-Object { $_ -match $deny }
+          if ($bad) { throw "forbidden imports: $($bad -join ', ')" }
+
+      - name: Gate - shim export present
+        shell: powershell
+        run: |
+          $vcvars = '${{ steps.vcvars.outputs.path }}'
+          $out = cmd /c 'call "' + $vcvars + '" >nul && dumpbin /EXPORTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          if (-not ($out | Select-String 'shim_match_template')) { throw 'shim_match_template not exported' }
+
+      - name: Upload artifact (msvc)
+        uses: actions/upload-artifact@v7
+        with:
+          name: opencv_shim-msvc
+          path: out-msvc/opencv_shim.dll
+          if-no-files-found: error

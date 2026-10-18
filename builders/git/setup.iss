@@ -25,6 +25,7 @@
 #endif
 
 [Setup]
+; A fixed AppId makes upgrades/reinstalls replace the same installation.
 AppId={{A98E4B2C-7F3D-4A1B-9C0E-6D5F2B8E1C4A}
 AppName=Git for Windows
 AppVersion={#MyAppVersion}
@@ -37,6 +38,9 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 Compression=lzma2/max
+; A 128 MB dictionary is the largest this (32-bit) ISCC encoder accepts (256 MB
+; fails with LZMA_Encode code 5); the ~388 MB staging tree is larger, so it
+; spans multiple solid blocks.
 LZMADictionarySize=131072
 SolidCompression=yes
 WizardStyle=modern

@@ -61,7 +61,7 @@
 
 | 组件 | 来源 | 取用内容 |
 | --- | --- | --- |
-| Rust 工具链 | <https://static.rust-lang.org/dist/channel-rust-stable.toml> | 版本与各组件精确 URL；下载 `rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview` 的 `-x86_64-pc-windows-msvc.tar.gz` 并合并为暂存树（后两者的**归档文件名**为 `rustfmt` / `clippy`，无 `-preview`，见 §6 与 [lessons.md §16](lessons.md)） |
+| Rust 工具链 | <https://static.rust-lang.org/dist/channel-rust-stable.toml> | 版本与各组件精确 URL；下载 `rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview` 的 `-x86_64-pc-windows-msvc.tar.gz` 并合并为暂存树（后两者的**归档文件名**为 `rustfmt` / `clippy`，无 `-preview`，见 §6 与 [lessons.md §15](lessons.md)） |
 | LLD 链接器 | **rustc 组件自带**，无独立下载 | `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（真正的多 flavor 驱动）+ `gcc-ld\lld-link.exe`（按名分派的极小包装器，按相对路径拉起 `rust-lld`） |
 | Windows SDK / CRT | 微软官方 CDN（`https://aka.ms/vs/17/release`），经 [xwin](https://github.com/Jake-Shadle/xwin) 提取 | `crt\`（VC 头文件与 `msvcrt`/`vcruntime` 导入库）、`sdk\`（UCRT 与 Windows SDK 头文件/`kernel32` 等导入库） |
 | 版本发现 | GitHub API（xwin 最新 release） | 自动取最新 xwin 的 Windows MSVC `.tar.gz` 资产，避免硬编码版本被清理后 404 |
@@ -101,8 +101,8 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 ## 6. 设计约定
 
-- **不硬编码版本**：Rust 补丁版本从官方 channel TOML 解析（`[pkg.rust].version` 去括号后缀，顶层 `date` 为 channel 日期），组件 URL 亦直接取自该文件，不猜测；解析为空立即终止。TLD 解析需同时兼容 `[table]` 与 `[[array-of-table]]` 两种括号形式（见 [lessons.md §12](lessons.md)）。
-- **组件名 ≠ 归档文件名**：channel 中 rustfmt / clippy 的组件名是 `rustfmt-preview` / `clippy-preview`，归档文件名却是 `rustfmt-<ver>-<target>.tar.gz` / `clippy-<ver>-<target>.tar.gz`（无 `-preview`）。因此 `$components` 同时保存 `Name`（解析键 + 内层合并目录名）与 `FileStem`（pinned 版本重建 URL 用的文件名前缀）；把二者混用会拼出 `rustfmt-preview-<ver>-…tar.gz` 而 404。实测内部布局：`rustfmt-preview/` 含 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`，`clippy-preview/` 含 `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者 `manifest.in` 都列出 `*.pdb` —— 官方安装同样包含这些 PDB，故**全量拷贝即与官方一致**（见 [lessons.md §16](lessons.md)）。
+- **不硬编码版本**：Rust 补丁版本从官方 channel TOML 解析（`[pkg.rust].version` 去括号后缀，顶层 `date` 为 channel 日期），组件 URL 亦直接取自该文件，不猜测；解析为空立即终止。TOML 解析需同时兼容 `[table]` 与 `[[array-of-table]]` 两种括号形式（见 [lessons.md §16](lessons.md)）。
+- **组件名 ≠ 归档文件名**：channel 中 rustfmt / clippy 的组件名是 `rustfmt-preview` / `clippy-preview`，归档文件名却是 `rustfmt-<ver>-<target>.tar.gz` / `clippy-<ver>-<target>.tar.gz`（无 `-preview`）。因此 `$components` 同时保存 `Name`（解析键 + 内层合并目录名）与 `FileStem`（pinned 版本重建 URL 用的文件名前缀）；把二者混用会拼出 `rustfmt-preview-<ver>-…tar.gz` 而 404。实测内部布局：`rustfmt-preview/` 含 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`，`clippy-preview/` 含 `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者 `manifest.in` 都列出 `*.pdb` —— 官方安装同样包含这些 PDB，故**全量拷贝即与官方一致**（见 [lessons.md §15](lessons.md)）。
 - **LLD 不额外下载**：rustc 组件已内置 `rust-lld` 与其 `gcc-ld` 小小的 per-flavor 包装器，`linker` 指向 `gcc-ld\lld-link.exe` 即可；该包装器**按相对路径**定位 `rust-lld`，因此**必须保持组件原始相对布局**（不得把 `lld-link.exe` 单独搬到 `bin\`）。此前从 LLVM Release 下载并解压 `lld-link.exe` 的做法已移除。
 - **"与官方安装一致"优先**：官方 rustup 在 MSVC 下**不写任何 cargo 配置**、使用系统 VS 的 `link.exe`。本包只在系统确实没有可用 MSVC 工具链时才偏离这一默认（写 LLD + 内置 SDK 的兜底配置），有 VS 的机器上与官方行为一致。不能用 `-C link-self-contained=+linker` 这类官方机制"零配置启用内置 LLD"——该选项目前仅在 `x86_64-unknown-linux-gnu` 上稳定，Windows MSVC 目标不适用（见 [rustc codegen-options](https://doc.rust-lang.org/rustc/codegen-options/index.html)）。
 - 暂存目录（`build/stage/rust`）根目录即安装后的 `C:\pf\rust`。组件 tar.gz 内层多一层版本目录、再内层才是真正的组件目录（`rust-std` 内层名带 target 后缀），合并时须取组件子目录本身，否则 `bin\rustc.exe` / `lib\rustlib\<target>\lib` 布局错位（`E0463: can't find crate for std`）。
