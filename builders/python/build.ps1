@@ -9,9 +9,9 @@
     - Downloads the official python-<VER>-amd64.zip (the relocatable
       "pythoncore" layout used by the Python install manager) and verifies it
       against the sha256 published in that same index.
-    - Stages the binary tree; the staged root equals C:\pf\python-<track> after
-      install. The bundled Doc\ folder (offline HTML documentation, ~79 MB /
-      ~58% of the payload) is trimmed by default; -KeepDoc keeps it.
+    - Stages the binary tree; the staged root equals C:\pf\python after install.
+      The bundled Doc\ folder (offline HTML documentation, ~79 MB / ~58% of the
+      payload) is trimmed by default; -KeepDoc keeps it.
     - Generates pip.cmd at the stage root: the zip ships pip inside
       Lib\site-packages but has no Scripts\ folder, so a bare `pip` command
       would not exist otherwise.
@@ -19,8 +19,8 @@
       packaged version, sys.prefix must follow the staged location, tkinter
       (bundled Tcl/Tk) must initialise, the bundled pip must run and venv
       creation must produce a working interpreter.
-    - Compiles an Inno Setup installer which installs to C:\pf\python-<track>
-      by default and appends the install dir to the system PATH.
+    - Compiles an Inno Setup installer which installs to C:\pf\python by default
+      and appends the install dir to the system PATH.
 
 .PARAMETER PythonVersion
     Exact CPython version, e.g. 3.15.0. Empty = newest final 64-bit release in
@@ -142,7 +142,7 @@ if ($OfficialSha -notmatch '^[0-9a-f]{64}$') {
 }
 
 Write-Host "  Python version : $PythonVersion  ($DisplayName)"
-Write-Host "  Track          : $Track  ->  C:\pf\python-$Track"
+Write-Host "  Track          : $Track  ->  C:\pf\python"
 Write-Host "  Package        : $AssetFile"
 Write-Host "  Official sha256: $OfficialSha"
 
@@ -275,7 +275,7 @@ try {
     Write-Host "  $($verOut.Trim())"
 
     # Relocatable layout: sys.prefix must follow the executable, not a
-    # machine-wide registry entry. This is what makes C:\pf\python-<track> work.
+    # machine-wide registry entry. This is what makes C:\pf\python work.
     $prefixOut = (& $pyExe -c 'import sys; print(sys.prefix)' 2>&1) -join "`n"
     if ($LASTEXITCODE -ne 0 -or $prefixOut.Trim().TrimEnd('\') -ne $StageDir.TrimEnd('\')) {
         throw "sys.prefix does not follow the staged tree (expected '$StageDir'): $prefixOut"
@@ -343,7 +343,6 @@ if (-not $SkipCompile) {
     Write-Step 'Compiling installer'
     & $iscc (Join-Path $ScriptDir 'setup.iss') /Q `
         "/DMyAppVersion=$PythonVersion" `
-        "/DPyTrack=$Track" `
         "/DStageDir=$StageDir" `
         "/DOutputDir=$OutDir" `
         "/DOutputBaseFilename=$SetupName"
@@ -365,8 +364,8 @@ $buildInfo = [ordered]@{
     sourceUrl      = $DownloadUrl
     officialSha256 = $OfficialSha
     docTrimmed     = (-not $KeepDoc)
-    defaultPath    = "C:\pf\python-$Track"
-    pathEntries    = @("C:\pf\python-$Track")
+    defaultPath    = 'C:\pf\python'
+    pathEntries    = @('C:\pf\python')
     commands       = @('python', 'pythonw', 'pip')
     builtAt        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 }
@@ -400,7 +399,9 @@ if (-not $SkipCompile) {
 
 ## 默认行为
 
-- 默认安装目录：``C:\pf\python-$Track``（安装向导中可修改）
+- 默认安装目录：``C:\pf\python``（安装向导中可修改）
+- 同一轨道的小版本升级（如 3.15.0 → 3.15.1）与跨轨道更换（3.14 → 3.15）都替换**同一个**安装实例；
+  跨轨道更换建议先卸载旧版本再安装，避免新旧 ``Lib\`` 目录混装；需要多版本并存请在向导中指定不同目录
 - 安装后自动将安装目录加入系统 PATH，新开命令行可直接使用 ``python``、``pythonw``、``pip``
 - ``pip`` 由构建期生成的 ``pip.cmd``（``"%~dp0python.exe" -m pip %*``）提供：官方 zip 没有 ``Scripts\`` 目录，
   且包装器不依赖调用方工作目录
@@ -410,9 +411,9 @@ $docLine
 
 ## 使用说明
 
-- ``pip install`` 默认写入安装目录的 ``Lib\site-packages``（默认 ``C:\pf\python-$Track``），需要管理员终端；
+- ``pip install`` 默认写入安装目录的 ``Lib\site-packages``（默认 ``C:\pf\python``），需要管理员终端；
   日常开发建议 ``python -m venv .venv`` 建虚拟环境后再装依赖（无需管理员）
-- 不含 ``py`` 启动器（官方 Windows 安装器与 Store 版才有），多版本并存时 PATH 中先命中者生效
+- 不含 ``py`` 启动器（官方 Windows 安装器与 Store 版才有）；多版本并存时按 PATH 中先命中的安装目录生效
 - 不写注册表运行时（``HKLM\SOFTWARE\Python``），不注册 ``.py`` 文件关联
 
 ## 校验

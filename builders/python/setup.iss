@@ -3,16 +3,12 @@
 ;
 ; Compiled by builders/python/build.ps1 via ISCC.exe with these defines:
 ;   /DMyAppVersion=<x.y.z>    e.g. 3.15.0
-;   /DPyTrack=<x.y>           e.g. 3.15 (drives the default install dir)
 ;   /DStageDir=<staged binary tree>
 ;   /DOutputDir=<output folder>
 ;   /DOutputBaseFilename=<setup exe base name>
 ;
 #ifndef MyAppVersion
   #error MyAppVersion must be defined, e.g. /DMyAppVersion=3.15.0
-#endif
-#ifndef PyTrack
-  #error PyTrack must be defined, e.g. /DPyTrack=3.15
 #endif
 #ifndef StageDir
   #error StageDir must be defined
@@ -25,16 +21,16 @@
 #endif
 
 [Setup]
-; A fixed AppId makes upgrades/reinstalls replace the same installation. The
-; default directory only carries the major.minor track, so a patch upgrade
-; (3.15.0 -> 3.15.1) replaces the same instance at the same path.
+; A fixed AppId makes upgrades/reinstalls replace the same installation: all
+; tracks share the default directory, so installing another track replaces the
+; existing instance instead of adding a second one.
 AppId={{B3F6D8E5-2A94-4C71-8E5B-7D1A9F3C6B20}
 AppName=Python
 AppVersion={#MyAppVersion}
 AppVerName=Python {#MyAppVersion} (x64)
 AppPublisher=win-env
 AppComments=Python (CPython) command-line/build environment, packaged by win-env
-DefaultDirName=C:\pf\python-{#PyTrack}
+DefaultDirName=C:\pf\python
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64compatible

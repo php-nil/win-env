@@ -33,6 +33,22 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 `.bat` 包装器等纯 ASCII 文件用 `ASCIIEncoding`；生成的 php.ini 同样用无 BOM UTF-8。
 
+### 1.3 `.ps1` 出现**双 BOM** 会让 PS 5.1 解析直接失败（`InvalidLeftHandSide`）
+
+* **现象（2026-10 CI 实测，gnu 路线 `builders/opencv-shim/build.ps1`）**：脚本停在**解析阶段**，报 5 条 `The assignment expression is not valid. The input to an assignment operator must be an object that is able to accept assignments, such as a variable or a property.`（`FullyQualifiedErrorId: InvalidLeftHandSide`），位置集中在 `param()` 块——`[string]$Stage = "all"`、`[string]$OpenCvSrc = ""` 等（行 45/47/48/49/50），步骤 `exit 1`，没有任何运行时输出。
+* **根因**：文件头是**双 BOM**（`EF BB BF EF BB BF`）。PS 5.1 只消化第一个 `EF BB BF`，第二个 BOM 被当成**正文首个字符 U+FEFF** 进入词法分析，紧随其后的 `param(` 于是被解析成表达式而非关键字，`param()` 内每个 `[类型]$变量 = 值` 都报"赋值号左侧不是可赋值对象"。
+* **本机实测（PS 5.1.19041）**：`[System.Management.Automation.Language.Parser]::ParseFile($f, [ref]$null, [ref]$errs)` 复现出**同样 5 条错误、行号与 CI 完全一致**；字节检查 `BOM count = 2`；去掉多余 BOM 后 `parseErrors = 0`（文件仅少 3 字节，正文内容零改动）。
+* **规则**：`.ps1` 只允许**一个** `EF BB BF`。用 AI/编辑器批量改脚本后别只问"有没有 BOM"，要数**有几个**；消除多余 BOM 用字节级重写（先 `ReadAllBytes`，再 `TrimStart([char]0xFEFF)` 后补回单 BOM）：
+
+```powershell
+$f = 'builders\opencv-shim\build.ps1'
+$b = [IO.File]::ReadAllBytes($f)
+$text = [Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
+[IO.File]::WriteAllBytes($f, [byte[]](0xEF,0xBB,0xBF) + [Text.Encoding]::UTF8.GetBytes($text))
+```
+
+**体检方法**：全仓库扫描 `Get-ChildItem -Recurse -Filter *.ps1`，对每个文件数 `EF BB BF` 出现次数并跑 `Parser::ParseFile` 数错误，一次揪出所有解析期隐患（本轮据此确认 12 个 `.ps1` 中仅 `builders/opencv-shim/build.ps1` 异常，其余 `BOM=1 parseErrors=0`）。
+
 ## 2. Inno Setup / ISCC
 
 ### 2.1 禁止用 `ISCC /?` 做健康检查

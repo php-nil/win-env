@@ -17,7 +17,7 @@
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
 | Release 标签 | `python-<version>` |
 | 规格 | 官方 `python-<version>-amd64.zip`（install manager 的 **pythoncore 可重定位**布局）· x64 · GIL（非 free-threaded） |
-| 默认安装目录 | `C:\pf\python-<major.minor>`（如 `C:\pf\python-3.15`，安装向导中可修改） |
+| 默认安装目录 | `C:\pf\python`（安装向导中可修改；需要多版本并存时改到不同目录） |
 | 安装后命令 | `python`、`pythonw`、`pip`（安装目录强制加入系统 PATH，新开命令行即可用；`pip` 由构建期生成的 `pip.cmd` 提供） |
 | 内置内容 | `pip`、`venv`、`tkinter`（Tcl/Tk）、`include\` + `libs\`（C 扩展构建头文件与导入库） |
 | 裁剪项 | 官方 `Doc\`（离线 HTML 文档，约 79 MB，默认裁剪，`-KeepDoc` 可保留） |
@@ -45,15 +45,15 @@
 ## 3. 安装包行为
 
 - 安装器 exe 图标为 Python 官方图标（提取自官方 `python.exe` 的图标资源组，16/24/32/48/64/256 px 各含 8bpp 与 32bpp 两帧，共 12 帧，随仓库保存在 `builders/python/setup.ico`）。
-- 双击安装，向导默认目录 `C:\pf\python-<major.minor>`（如 `C:\pf\python-3.15`），可自行修改。
+- 双击安装，向导默认目录 `C:\pf\python`，可自行修改（默认目录不含版本号，与 node/chromium 等环境一致）。
 - 安装内容即官方 `python-<version>-amd64.zip` 解压后的目录树（`python.exe`、`pythonw.exe`、`DLLs\`、`Lib\`、`include\`、`libs\` 等，已裁剪 `Doc\`）加上构建期生成的 `pip.cmd`，安装器只做原样释放，不在安装期下载或拼装任何内容。
 - PATH（**必加，无安装选项**）：安装根目录加入**系统** PATH —— `python.exe`、`pythonw.exe` 与生成的 `pip.cmd` 都落在根目录（官方 zip **没有** `Scripts\` 目录）。
   - 安装时幂等追加（不重复、不动无关条目、顺带去空条目），并广播 `WM_SETTINGCHANGE`；
   - 卸载时精确移除该条目，其余 PATH 内容保留；已打开的旧命令行窗口需重开才能感知变化。
-- 安装器固定 `AppId`（`{{B3F6D8E5-2A94-4C71-8E5B-7D1A9F3C6B20}}`），重复安装/升级替换同一安装实例。
-  - 同轨道小版本升级（`3.15.0` → `3.15.1`）默认目录不变，就地替换；
-  - **跨轨道安装**（如已装 3.15 再装 3.14）时 Inno 会沿用检测到的既有安装目录（`C:\pf\python-3.15`），需要并存必须在向导中手动改目录 —— 推荐做法是装不同轨道时指定不同目录，或先卸载旧版。
-- **`pip install` 的写入位置**：不加 `-g`-风格前缀时默认装进当前解释器所在安装目录的 `Lib\site-packages`（即 `C:\pf\python-<track>`），因此需要管理员终端；日常开发推荐 `python -m venv .venv` 建虚拟环境后安装依赖（无需管理员，且与安装目录解耦）。
+- 安装器固定 `AppId`（`{{B3F6D8E5-2A94-4C71-8E5B-7D1A9F3C6B20}}`），重复安装/升级替换同一安装实例（目录不变，就地替换）：
+  - 同轨道小版本升级（`3.15.0` → `3.15.1`）直接覆盖即可；
+  - **跨轨道更换**（如已装 3.15 再装 3.14）也落在同一个 `C:\pf\python`：Inno 只覆盖新包里的文件，旧树里新包没有的文件（例如不同轨道间增删的标准库模块）不会被自动清理，因此**建议先卸载旧版本再安装新轨道**，避免新旧 `Lib\` 混装；需要多版本并存时在向导中手动指定不同目录。
+- **`pip install` 的写入位置**：不加 `-g`-风格前缀时默认装进当前解释器所在安装目录的 `Lib\site-packages`（即 `C:\pf\python`），因此需要管理员终端；日常开发推荐 `python -m venv .venv` 建虚拟环境后安装依赖（无需管理员，且与安装目录解耦）。
 - **不含 `py` 启动器**：官方 Windows 安装器与 Microsoft Store 版才有 `py.exe`；本包只提供 `python.exe`/`pythonw.exe`。多版本并存时按系统 PATH 顺序命中先出现者。
 - 不写 Python 注册表运行时（`HKLM\SOFTWARE\Python`）、不注册 `.py` 文件关联，卸载无残留。
 
@@ -109,14 +109,14 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 - **不硬编码补丁版本号**：运行时从官方 install-manager 索引解析最新正式版；解析为空立即终止报错，不猜测 URL。索引里的下载 URL 与 `hash.sha256` 是唯一权威来源，下载前先校验"渠道是 `www.python.org/ftp/python/`"与"资产名等于 `python-<ver>-amd64.zip`"。版本发现走 python.org（非 GitHub API），无速率限额问题。
 - **索引文档是对象不是数组**：`index-windows.json` 的顶层是 `{ "next": ..., "versions": [...] }`，条目在 `.versions`；把它当数组读会静默只得到 1 项、所有过滤落空（见 [经验教训 §27](lessons.md)）。
-- 暂存目录（`build/stage/python`）根目录即安装后的 `C:\pf\python-<track>`，安装器只负责原样释放与 PATH 改写。与 Node.js/PostgreSQL 的资产不同，本 zip **没有单层包装目录**，解压结果直接就是暂存根，不做拍平；同时断言 `python._pth` 不存在，防止把 embeddable 发行版误当 pythoncore 组装。
+- 暂存目录（`build/stage/python`）根目录即安装后的 `C:\pf\python`，安装器只负责原样释放与 PATH 改写。与 Node.js/PostgreSQL 的资产不同，本 zip **没有单层包装目录**，解压结果直接就是暂存根，不做拍平；同时断言 `python._pth` 不存在，防止把 embeddable 发行版误当 pythoncore 组装。
 - **裁剪 `Doc\`（默认）**：官方 zip 的 `Doc\html` 约 78.7 MB，是解压树里唯一的大单项（占 ~58%），且对 CLI/构建/venv 场景无用；裁剪后暂存树 57.6 MB。需要离线文档时用 `-KeepDoc` 重新构建（安装包会明显变大）。裁剪/保留结果都有断言兜底。
 - 下载缓存于 `build/cache`（按官方资产名命名），重复构建不重复下载；下载失败自动重试 3 次；**缓存命中也会重新校验 SHA-256**，避免复用被改坏的缓存。
 - 交付给 ISCC 前清理暂存树里的重解析点并复查为 0（见 [经验教训 §14](lessons.md)）。
 - **`pip.cmd` 由构建期生成**：官方 zip 没有 `Scripts\`，裸 `pip` 命令不存在；包装器内容为 `"%~dp0python.exe" -m pip %*`，UTF-8 **无 BOM** + CRLF（见 [经验教训 §1.2](lessons.md)），并断言内容与编码，避免依赖调用方工作目录。
 - 组装完成有强制冒烟测试（任一失败即 throw，不产出坏包）：
   - `python.exe -V` 输出必须与版本号逐字一致（`Python <version>`）；
-  - `sys.prefix` 必须等于暂存目录（证明可重定位布局成立，安装到 `C:\pf\python-<track>` 后仍自洽）；
+  - `sys.prefix` 必须等于暂存目录（证明可重定位布局成立，安装到 `C:\pf\python` 后仍自洽）；
   - `tkinter` 必须能真实初始化 Tcl 并返回版本号（证明 `DLLs\_tkinter.pyd` 与 Tcl/Tk 运行库可用）；
   - 内置 `pip` 必须可用（`python -m pip -V`），且生成的 `pip.cmd` 包装器同样可执行；
   - `python -m venv` 建出的虚拟环境解释器必须能报告同一版本（覆盖 venv/ensurepip 链路）；

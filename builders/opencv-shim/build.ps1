@@ -1,4 +1,4 @@
-﻿﻿# build.ps1
+﻿# build.ps1
 #
 # Build a minimal OpenCV from source with MinGW + CMake, then build the shim
 # against it.
