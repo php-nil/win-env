@@ -124,6 +124,19 @@ if ($code -ne 0) { throw ... }
 * **根因（实测三种调用方式）**：PS 5.1 把实参拼成子进程命令行时，**空字符串实参被整体丢弃**（`''` 不产生任何 token），于是 `-Mirror` 后面没有值；`& <script> -Mirror ''`（会话内）与 `-Command "& ... -Mirror ''"` 都能正确保住空串。
 * **规则**：要给脚本传**空字符串**时，用会话内调用（`& <script> -Mirror ''`，本仓库 workflow 统一如此，见 build-rust.yml）；不要用 `powershell -File ...` 外起进程。若必须外起进程，把"空"表达成显式开关（如 `-Direct`）或干脆不传该参数。
 
+### 4.7 `cmd /c 'call "' + $vcvars + '" ...'` 不会拼接：命令参数模式把 `+` 当普通词
+
+* **现象（2026-10 CI 实测，MSVC 路线 dumpbin 门禁步骤）**：`'""' is not recognized as an internal or external command, operable program or batch file.`，紧接着 `imports: `（空），步骤 `exit 1`。
+* **根因**：`$out = cmd /c 'call "' + $vcvars + '" >nul && dumpbin ...'` —— PowerShell 的**命令参数模式**不执行 `+` 运算，`'call "'`、`+`、`$vcvars`、`+` … 被当成一串彼此独立的实参交给 cmd，拼不出成型命令行，cmd 就把 `""` 当命令去执行。同一文件里"先把命令行拼进字符串变量、再 `cmd /c $cmd`"的写法不受影响（这正是 build / compile 步骤能跑通的原因）。
+* **本机实测（PS 5.1）**：同一段文本，内联形式输出 `'""' is not recognized ...` 且退出码 1；`$cmd = '...' + ...; cmd /c $cmd` 形式正常执行、退出码 0。
+* **规则**：给 `cmd /c` 传命令行时先拼进一个字符串变量再传，不在实参位置写 `+` 拼接。**附带必做**：门禁/校验步骤要断言"确实跑出了东西"（如 `if (-not $deps) { throw 'the gate did not run' }`），否则 cmd 拼坏时输出为空、过滤结果也为空，门禁会**静默假通过**。
+
+### 4.8 原生命令直接管进 `Select-Object -First N` 会杀掉进程，留下非 0 的 `$LASTEXITCODE`
+
+* **现象（2026-10 CI 实测，gnu 路线 setup-mingw.ps1）**：脚本已打印完最后一行 `[setup] Done: ...`，步骤仍 `exit 1`。
+* **根因**：脚本里唯一未校验的原生命令是末行的 `& $Gxx --version | Select-Object -First 1`。`Select-Object -First N` 拿到 N 个对象即**终止整条管道**，PS 随之 Kill 上游原生命令——进程若尚未自然退出，`$LASTEXITCODE` 就留在非 0（本机 PS 5.1 实测：持续大量输出的原生命令被中断后 `$LASTEXITCODE = -1`；CI 里 g++ 输出很短，抢在 Kill 前因断管自行退出，留下退出码 1）。GitHub Actions 的 PowerShell 包装器结尾是 `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`，于是"脚本明明成功、步骤却失败"，且报错里没有任何可读信息。
+* **规则**：不要把原生命令**直接**管进 `Select-Object -First N`。先把完整输出收进变量（`$lines = & $exe --version`），再从数组取前几行——此时管道下游只是数组、不会中断任何进程；并顺带显式校验退出码（`if ($LASTEXITCODE -ne 0 -or -not $lines) { throw }`），让探针失败时给出可读错误而不是裸退出码。
+
 ## 5. 网络与环境
 
 ### 5.1 本机沙箱可能阻断 github.com，但 CI runner 不受影响
@@ -296,4 +309,18 @@ if ($code -ne 0) { throw ... }
 * **现象（2026-10 CI 实测）**：`builders/opencv-shim/setup-mingw.ps1 -Mirror ''` 解析 WinLibs 最新 release 时，`Invoke-RestMethod` 对 `api.github.com` 返回 `(403) Forbidden`，"镜像与直连均不可用"，构建在解析阶段即终止。
 * **根因**：匿名访问 GitHub API 限额 60 次/小时且**按出口 IP 计**；GitHub 托管 runner 共享出口 IP，配额极易被同池其它 job 耗尽而 403——同一 workflow 里 `resolve` job 因带了 `secrets.GITHUB_TOKEN` 反而不受影响，恰好反证了这一点。
 * **规则**：凡是 CI 内调用 GitHub API 的步骤，都要经 `env:` 注入 `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`；脚本侧按"**存在该变量才**加 `Authorization: Bearer`"实现，保证本地匿名直连行为不变（见 [setup-mingw.ps1](../builders/opencv-shim/setup-mingw.ps1)）。
+
+## 27. python.org install-manager 索引 `index-windows.json` 是对象（条目在 `.versions`），当数组读会静默落空
+
+* **现象（2026-10 实测，3.15.0/3.16.0a1 时期）**：`Invoke-RestMethod https://www.python.org/ftp/python/index-windows.json` 之后按数组过滤（`@($doc) | Where-Object { $_.company -eq 'PythonCore' ... }`）**一条都筛不出来**；打印 `@($doc).Count` 得到 **1**，看上去像"文档里只有一条记录"，而实际有 258 条。
+* **根因**：该文档顶层是**对象**，不是数组：`{ "next": "...", "versions": [ ...258 条... ] }`。`Invoke-RestMethod` 把它反序列化成 `PSCustomObject`，`@($doc)` 只是把这**一个对象**包成单元素数组，条目列表在 `$doc.versions`。
+* **事实（同一次实测）**：条目字段有 `id`、`company`、`sort-version`、`url`、`hash.sha256`、`display-name`。`id` 形如 `<company>-<x.y>[-t]-<arch>`：`company` ∈ {`PythonCore`（常规 CPython）、`PythonEmbed`（embeddable）、`PythonTest`（测试用运行时）}；free-threaded 线把 `t` 挂在次版本号后面（`pythoncore-3.15t-64`），与 `-64` 的锚定正则 `^pythoncore-\d+\.\d+-64$` 天然不相交；`arch` ∈ {`32`,`64`,`arm64`}。`sort-version` 是发现用的排序键：正式版是**纯 `x.y.z`**，预发布带后缀（`3.16.0a1`、`3.15.0b3`）——存在 `pythoncore-3.16-64` 这种"新轨道但只有 alpha"的条目，只有加 `sort-version -match '^\d+\.\d+\.\d+$'` 才不会被它顶掉（否则 `[version]'3.16.0a1'` 转换也会直接抛错）。
+* **规则**：解析前先打印顶层属性名（`Get-Member -MemberType NoteProperty`）确认形态，别按"有多个版本 → 一定是数组"推断；下载 URL 与 `hash.sha256` 一律直接取自条目，不自行拼 URL。
+
+## 28. PS 5.1 会把原生命令参数里的内嵌双引号剥掉（含空格的载荷还会被切开）
+
+* **现象（2026-10 实测）**：冒烟测试执行 `& $pyExe -c 'import tkinter; print(tkinter.Tcl().eval("info patchlevel"))'`，Python 实际收到的是 `import tkinter; print(tkinter.Tcl().eval(info)` —— 内嵌 `"` 被删除，且 `info patchlevel` 之间的空格把参数**又切成了两段**，测试以 `SyntaxError: invalid syntax. Perhaps you forgot a comma?` 失败（构建脚本本身没问题，是参数在 PS → en-US CRT 命令行这一层被改写）。
+* **根因**：PS 5.1 拼原生命令命令行时不转义参数里的内嵌双引号（该行为到 PS 7 才改善），双引号被解析层吃掉后，剩余文本再按空格分词。
+* **规则**：向 `python -c` / `node -e` / `perl -e` 这类命令传脚本载荷时，载荷内部**只用单引号**，PS 侧用双引号字符串包住它（`-c "print(t.eval('info patchlevel'))"`）；确实需要内嵌双引号或多行时，写临时 `.ps`/`.py` 文件或经 stdin 送入，别把它塞进命令行。
+
 

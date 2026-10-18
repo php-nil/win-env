@@ -14,6 +14,7 @@
 | Rust (MSVC) | 1.99.x · x64 · x86_64-pc-windows-msvc | [GitHub](https://github.com/php-nil/win-env/releases/download/rust-1.99.1-msvc/rust-1.99.1-msvc-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/rust-1.99.1-msvc/rust-1.99.1-msvc-setup-x64.exe) |
 | PostgreSQL | 18.x · x64 · 命令行为主（含 `pg-start`/`pg-stop` 管理脚本） | [GitHub](https://github.com/php-nil/win-env/releases/download/postgres-18.6/postgres-18.6-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/postgres-18.6/postgres-18.6-setup-x64.exe) |
 | Chromium (ungoogled) | 155.x · x64 · 便携版 · 含桌面快捷方式 | [GitHub](https://github.com/php-nil/win-env/releases/download/chromium-155.0.8059.39-1.1/chromium-155.0.8059.39-1.1-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/chromium-155.0.8059.39-1.1/chromium-155.0.8059.39-1.1-setup-x64.exe) |
+| Python | 3.15.x · x64 · 内置 pip/venv/tkinter | [GitHub](https://github.com/php-nil/win-env/releases/download/python-3.15.0/python-3.15.0-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/python-3.15.0/python-3.15.0-setup-x64.exe) |
 
 > 下载地址为当前最新 Release 的安装包直链（代理走 gh-proxy），新版本发布后版本号同步变化；历史版本见 [Releases](https://github.com/php-nil/win-env/releases)。
 

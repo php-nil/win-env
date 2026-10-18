@@ -1,0 +1,82 @@
+name: Build Python
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: 'Exact CPython version, e.g. 3.15.0. Leave empty for the newest final 64-bit release in the official python.org install-manager index.'
+        required: false
+        default: ''
+      major_track:
+        description: 'Major.minor track for auto-discovery, e.g. 3.14. Leave empty for any track. Ignored when python_version is set.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build Python installer
+        id: build
+        shell: powershell
+        run: |
+          & .\builders\python\build.ps1 -PythonVersion '${{ inputs.python_version }}' -MajorTrack '${{ inputs.major_track }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "python version = ${{ steps.build.outputs.python_version }}"
+          Write-Host "Installer      = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ steps.build.outputs.python_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: python-${{ steps.build.outputs.python_version }}
+          name: 'Python ${{ steps.build.outputs.python_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json

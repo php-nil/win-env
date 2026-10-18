@@ -162,5 +162,15 @@ if (-not $Force -and (Test-Path $Gxx)) {
     Write-Host "[setup] MinGW installed at $MingwDir"
 }
 
-& $Gxx --version | Select-Object -First 1
+# Probe the freshly installed toolchain. Never pipe a NATIVE command straight into
+# "Select-Object -First N": PowerShell stops the pipeline after N objects and KILLS
+# the process while it is still writing, which leaves $LASTEXITCODE at -1 -- and the
+# GitHub Actions PowerShell wrapper exits the step with $LASTEXITCODE even though the
+# setup itself succeeded. Capture the whole banner first (the pipe then only feeds a
+# plain array), then print its first line.
+$gxxVersion = & $Gxx --version
+if ($LASTEXITCODE -ne 0 -or -not $gxxVersion) {
+    throw "Toolchain probe failed: '$Gxx --version' left exit code $LASTEXITCODE."
+}
+$gxxVersion | Select-Object -First 1
 Write-Host "[setup] Done: tools\mingw64 is ready (gcc / g++)."

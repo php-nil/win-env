@@ -129,6 +129,12 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
    | `dumpbin /EXPORTS opencv_shim.dll` | 含 `shim_match_template` |
    | 链接期 | 五个 C API 符号全部可解析（缺一即链接失败） |
 
+   两条 dumpbin 闸门都经 `cmd /c` 执行，命令行**必须先拼进一个字符串变量再传给 cmd**：
+   PowerShell 命令参数模式不做 `+` 拼接，写成 `cmd /c 'call "' + $vcvars + '" >nul && dumpbin ...'`
+   只会把碎片当独立实参交给 cmd，得到 `'""' is not recognized as an internal or external command`，
+   闸门其实什么都没跑（见 [lessons.md](lessons.md) §4.7）。依赖闸门还断言 `$deps` 非空——
+   导入表为空只可能是 dumpbin 没跑起来（KERNEL32 恒在），不得当成"无违规依赖"放行。
+
 ## 5. FFI 内存边界规则（固化条款）
 
 适用于 shim 及其未来任何新导出；调用方（任何语言）对称遵守。

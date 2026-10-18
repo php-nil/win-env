@@ -385,13 +385,25 @@ jobs:
         shell: powershell
         run: |
           $vcvars = '${{ steps.vcvars.outputs.path }}'
-          $out = cmd /c 'call "' + $vcvars + '" >nul && dumpbin /DEPENDENTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          # Hand cmd ONE pre-built string, exactly like the build/compile steps do.
+          # Never inline the concatenation in the call itself
+          # (`cmd /c 'call "' + $vcvars + '" >nul && ...'`): PowerShell
+          # command-argument mode treats '+' as a literal word instead of joining
+          # the pieces, so cmd receives several separate arguments, answers with
+          # "'""' is not recognized as an internal or external command" and this
+          # gate silently runs nothing.
+          $cmd = 'call "' + $vcvars + '" >nul && dumpbin /DEPENDENTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          $out = cmd /c $cmd
           # dumpbin /DEPENDENTS indents each DLL name with 4+ spaces;
           # be tolerant of any indentation so we don't silently miss imports.
           $deps = $out | Select-String '^\s+(\S+\.dll)\s*$' |
                   ForEach-Object { $_.Matches[0].Groups[1].Value } |
                   Sort-Object -Unique
           Write-Host "imports: $($deps -join ', ')"
+          # An empty list means dumpbin never ran (a bad vcvars path throws above,
+          # but a cmd-level failure prints to stderr, which $out never sees) —
+          # KERNEL32 is always imported, so no imports cannot be a valid result.
+          if (-not $deps) { throw 'dumpbin produced no dependency list - the gate did not run' }
           # /MT should give us KERNEL32 (+ possibly api-ms-win-core-* base on Win10+).
           # Anything CRT / OpenCV / concrt leaks is a real problem.
           $deny = 'VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_'
@@ -402,7 +414,10 @@ jobs:
         shell: powershell
         run: |
           $vcvars = '${{ steps.vcvars.outputs.path }}'
-          $out = cmd /c 'call "' + $vcvars + '" >nul && dumpbin /EXPORTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          # Same rule as the dependency gate: build the command line into a
+          # variable first, or cmd gets a mangled line (see the note there).
+          $cmd = 'call "' + $vcvars + '" >nul && dumpbin /EXPORTS "' + $PWD + '\out-msvc\opencv_shim.dll"'
+          $out = cmd /c $cmd
           if (-not ($out | Select-String 'shim_match_template')) { throw 'shim_match_template not exported' }
 
       - name: Upload artifact (msvc)
