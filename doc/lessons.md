@@ -346,25 +346,21 @@ if ($code -ne 0) { throw ... }
 * **规则**：MinGW 上要"单文件、零 C++ 运行库依赖"，用 `-static`（**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）而不是只加 `-static-libgcc -static-libstdc++`。OS CRT（`msvcrt.dll`/`ucrtbase.dll`）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，`KERNEL32.dll` 同理——这属于允许范围。
 * **附带（`ole32.dll` 部分）**：`ole32.dll` 是 Windows 自带 OS 组件（OpenCV core `modules/core/src/system.cpp` 的 `cv::tempfile` 用 `CoCreateGuid`），与 `KERNEL32.dll` 同一类，**不是**可再发行运行库，不应判为"破坏自包含"——闸门白名单须纳入它。msvc 路线链接 `ole32.lib` 也会导入该 DLL。
 
-## 30. 用 `Select-String` 的 `.LineNumber` 去切原生命令捕获的数组，会静默切错区域
+## 30. 按"表头切区段"解析 `objdump -p` 的导出名，在真实 CI 上解析为空——改为整段扫描
 
-* **现象（2026-10 CI 实测，gnu 路线 shim 单导出闸门）**：闸门断言 `objdump -p` 的 `[Ordinal/Name Pointer] Table` 后恰有一条 `[   0] shim_match_template`，却报 `exports: ` 为空、`expected exactly one export 'shim_match_template', got: ` 并 exit 1。抛的是**数量**那条而非**找不到表头**那条，说明表头已匹配成功，但随后的切片一个条目都没提出来。
-* **根因**：代码用 `$header = $out | Select-String '…' | Select-Object -First 1`，再 `$out[($header.LineNumber)..($out.Count-1)]`。`$out` 是原生命令（`& objdump.exe`）捕获进变量的**数组**，而 `Select-String` 的 `.LineNumber` 并**不**映射为"该匹配在数组中的下标"，据此切片会落到错误区间，正则自然一条都提不到。正则本身 `^\s*\[\s*\d+\]\s+(\S+)\s*$` 与 binutils 的真实格式（`\t[   N] name`，已由官方文档/实测样例核对）是吻合的，故**不是正则问题**。
-* **规则**：解析原生命令（`objdump`/`dumpbin`/`gcc` …）的输出时——① 先把整段输出收进变量并校验 `$LASTEXITCODE`、断言非空（同 §4.7 的收口纪律）；② 定位"表头"用**显式索引 for 循环**（`$out[$i] -match '…'`），**不要**用 `Select-String` 的 `.LineNumber`；③ 在表头之后按行收集条目（先 `Trim()` 再 `-match`，首条非条目行即表尾）；④ 解析结果为 0 时 `Write-Host` dump 原始区段自诊断，不要只抛一句数量错误。
+* **现象（2026-10 CI 实测，gnu 路线 shim 单导出闸门）**：闸门要从 `objdump -p` 断言"恰有一个导出名 `shim_match_template`"，连续两轮都报 `exports: ` 为空、`expected exactly one export 'shim_match_template', got: ` 并 exit 1。第一轮用 `$out | Select-String '\[Ordinal/Name Pointer\] Table' | Select-Object -First 1` 取 `$header.LineNumber` 再 `$out[$header.LineNumber..($out.Count-1)]` 切片；第二轮改为**显式索引 `for`** 定位同一表头、只收集紧随其后的 `[   N] name` 行。两轮都为空，且第二轮新增的 dump 显示表头之后很快就是 `The Function Table (interpreted .pdata section contents)`——按"表头定位 + 逐行收集"的思路拿不到任何名字条目。
+* **根因（经排查后收敛为"方法脆弱"，非单点）**：① `Select-String` 的 `.LineNumber` 并**不**映射为"匹配在捕获数组中的下标"，据此切片会落到错误区间；② 即便改用显式索引，"表头紧跟条目"这一**区段假设**也站不住——表头之后未必紧跟条目行（不同 binutils 版本的表头措辞/排版、表头与后续区段之间可能夹其他行，都会让"首条非条目行即表尾"的 `break` 立刻收摊）。真实 `objdump` 文本格式无法在本机复现（本机无 binutils、binutils 源码站被反爬挡），故**不再依赖任何表头/区段假设**。
+* **规则**：解析原生命令（`objdump`/`dumpbin`/`gcc` …）输出时——① 先把整段输出收进变量并校验 `$LASTEXITCODE`、断言非空（同 §4.7 的收口纪律）；② **不做**表头定位/区段切片，直接对**整段**逐行 `Trim()` 后按**条目形状**正则筛选（导出名条目 `^\[\s*\d+\]\s+(\S+)$` 只命中名字；Export Address Table 行 `[   N] +base[   M] 1234 Export RVA` 因含空格 token 不会误配）；③ 结果不符合预期时 `Write-Host` dump **整段**原始输出（不是某个窗口），让格式意外在下一轮完全自诊断。
 
 ```powershell
 $out = & objdump.exe -p $dll; if ($LASTEXITCODE -ne 0) { throw "objdump failed: $LASTEXITCODE" }
-$hdr = -1
-for ($i = 0; $i -lt $out.Count; $i++) { if ($out[$i] -match '\[Ordinal/Name Pointer\] Table') { $hdr = $i; break } }
+if (-not $out) { throw 'objdump produced no output' }
 $names = @()
-if ($hdr -ge 0) {
-  for ($i = $hdr + 1; $i -lt $out.Count; $i++) {
-    $line = $out[$i].Trim()
-    if ($line -eq '') { continue }
-    if ($line -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1]; continue }
-    break
-  }
+foreach ($raw in $out) { $l = $raw.Trim(); if ($l -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1] } }
+if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
+  $out | ForEach-Object { Write-Host $_ }   # dump every line on failure
+  throw "expected exactly one export 'shim_match_template', got: $($names -join ', ')"
 }
 ```
 
-* **本机复现验证**：用一段仿真的 `objdump -p` 输出（含 Export Address Table 的 `[   N] +base[   M] 1234 Export RVA` 干扰行）跑上述逻辑，显式索引扫描稳定提取出**恰一条** `shim_match_template`，干扰行（多 token，不匹配 `^\[\s*\d+\]\s+(\S+)$`）不会误配。
+* **本机复现验证**：构造两份 mock `objdump -p` 输出（表头分别写作 `[Ordinal/Name Pointer] Table` 与 `[Name Pointer/Ordinal] Table`，都含一行 `[   0] shim_match_template` 与若干 `[   N] +base[   M] 1234 Export RVA` 干扰行），整段扫描法对两份都稳定提取**恰一条** `shim_match_template`；纯干扰行输出提取 0 条（不会误配）。

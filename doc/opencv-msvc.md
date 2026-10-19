@@ -158,11 +158,12 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
    msvc 闸门是**黑名单式**（`VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_`），
    `ole32.dll` 本就不在其内、无需改动。
 
-   gnu 的**单导出闸门**（`objdump -p` 断言导出名表恰有 `shim_match_template`）也遵守同一套规则：
-   先把整段输出收进变量、校验退出码并断言非空，再用**显式索引扫描**定位
-   `[Ordinal/Name Pointer] Table`、逐行收集紧随其后的 `[   N] name` 条目（首条非条目行即表尾），
-   解析为 0 时 dump 原始区段自诊断。**不得**用 `Select-String` 的 `.LineNumber` 去切数组——
-   该行号映射不到原生命令捕获的数组下标，会切错区域并静默解析为空（见 [lessons.md](lessons.md) §30）。
+   gnu 的**单导出闸门**（`objdump -p` 断言导出名恰有 `shim_match_template`）不做表头定位/区段切片：
+   先把整段输出收进变量、校验退出码并断言非空，再对**整段**逐行 `Trim()` 后按条目形状
+   `^\[\s*\d+\]\s+(\S+)$` 筛选（只命中导出名；Export Address Table 的
+   `[   N] +base[   M] 1234 Export RVA` 因含空格 token 不会误配）。这样不依赖表头措辞、
+   不依赖各表/区段在输出中的相对顺序，也避开 `Select-String` 的 `.LineNumber`（它映射不到
+   原生命令捕获数组的下标）；解析不符预期时 dump **整段**原始输出自诊断（见 [lessons.md](lessons.md) §30）。
 
 ## 5. FFI 内存边界规则（固化条款）
 

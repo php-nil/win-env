@@ -202,35 +202,24 @@ jobs:
           $out = & "$PWD\tools\mingw64\bin\objdump.exe" -p out-gnu\opencv_shim.dll
           if ($LASTEXITCODE -ne 0) { throw "objdump -p failed: $LASTEXITCODE" }
           if (-not $out) { throw 'objdump -p produced no output for opencv_shim.dll' }
-          # Locate the export name table by scanning the captured lines with an
-          # explicit index. Do NOT use Select-String's .LineNumber here: it does
-          # not map reliably onto an array captured from a native command, so the
-          # slice below used to land on the wrong region and parse out empty.
-          $hdr = -1
-          for ($i = 0; $i -lt $out.Count; $i++) {
-            if ($out[$i] -match '\[Ordinal/Name Pointer\] Table') { $hdr = $i; break }
-          }
+          # Scan the WHOLE output for export-name entries instead of slicing a
+          # region after a table header. objdump prints export names as
+          # "<tab>[   N] name"; Export Address Table lines
+          # ("[   N] +base[   M] 1234 Export RVA") carry extra space-separated
+          # tokens and never match this shape. This is independent of the table
+          # header wording and of table/section ordering across binutils versions,
+          # and avoids Select-String's unreliable .LineNumber on a captured array.
           $names = @()
-          if ($hdr -ge 0) {
-            # Entries follow the header as "<tab>[   N] name"; the first non-entry
-            # line ends the table. Export Address Table lines
-            # ("[   N] +base[   M] 1234 Export RVA") never match this shape.
-            for ($i = $hdr + 1; $i -lt $out.Count; $i++) {
-              $line = $out[$i].Trim()
-              if ($line -eq '') { continue }
-              if ($line -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1]; continue }
-              break
-            }
+          foreach ($raw in $out) {
+            $line = $raw.Trim()
+            if ($line -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1] }
           }
           Write-Host "exports: $($names -join ', ')"
           if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
-            # Dump the raw region so any binutils output-format change is
+            # Dump the ENTIRE objdump output so any format surprise is fully
             # self-diagnosing on the next run instead of failing silently.
-            Write-Host '--- raw objdump -p region around the export tables ---'
-            $from = 0
-            if ($hdr -ge 0) { $from = $hdr }
-            $to = [Math]::Min($from + 20, $out.Count - 1)
-            $out[$from..$to] | ForEach-Object { Write-Host $_ }
+            Write-Host '--- raw objdump -p output (all lines) ---'
+            $out | ForEach-Object { Write-Host $_ }
             throw "expected exactly one export 'shim_match_template', got: $($names -join ', ')"
           }
 
