@@ -49,6 +49,10 @@ $text = [Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
 
 **体检方法**：全仓库扫描 `Get-ChildItem -Recurse -Filter *.ps1`，对每个文件数 `EF BB BF` 出现次数并跑 `Parser::ParseFile` 数错误，一次揪出所有解析期隐患（本轮据此确认 12 个 `.ps1` 中仅 `builders/opencv-shim/build.ps1` 异常，其余 `BOM=1 parseErrors=0`）。
 
+* **复发与症状变体（2026-10-19，`setup-mingw.ps1`）**：一次"修复"提交误把**合法单 BOM**（`EF BB BF 3C 23 …`）当成"多余前导字符"，往行首又补了一个 U+FEFF（`<#` 前变双 BOM），方向做反造成复发。症状随双 BOM 后的首个 token 改变：这次紧跟 `<#` 块注释，整个注释头被当代码解析，报的不再是 `InvalidLeftHandSide`，而是注释文本深处才浮现的 `The 'from' keyword is not supported` / `The '<' operator is reserved for future use` / `The ampersand (&) character is not allowed` / `Unexpected attribute 'CmdletBinding'`（首条错误在行 7 而非行 1，因为注释里恰好有能"凑合解析"的命令行）。**规则**：动文件头之前先 `ReadAllBytes` 看前 6 字节——`EF BB BF 3C 23` 是"单 BOM + `<#`"的**正常**形态，处理"多余前导字符"只删不添；诊断一律以字节为准，别按编辑器里可见的 `﻿` 或 Read 工具的渲染猜测。
+
+* **自动闸门（已落地，2026-10-19）**：`scripts/check-ps1.ps1` 由 `.github/workflows/lint-ps1.yml` 在每次 `push`/`pull_request` 调用，逐文件断言"BOM 不多于一个""含非 ASCII 必带单 BOM""`Parser::ParseFile` 零错误"，违规即列清单（附 head 十六进制字节，直接指出该删还是该补）并 throw；本地与 CI 是同一份脚本，从此**不再需要人工复查文件头**。闸门逻辑本身已在临时目录用植入样本实测：双 BOM、缺 BOM 的中文脚本、真实语法错误各命中且措辞准确，纯 ASCII 带 BOM 与正常文件不误伤。
+
 ## 2. Inno Setup / ISCC
 
 ### 2.1 禁止用 `ISCC /?` 做健康检查

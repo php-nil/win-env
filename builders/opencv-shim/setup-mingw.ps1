@@ -1,4 +1,4 @@
-﻿﻿<#
+﻿<#
 .SYNOPSIS
     Download a portable WinLibs MinGW-w64 toolchain into tools\mingw64.
 
