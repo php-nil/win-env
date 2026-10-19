@@ -21,6 +21,8 @@ if (-not ($b[0] -eq 0xEF -and $b[1] -eq 0xBB -and $b[2] -eq 0xBF)) {
 }
 ```
 
+* **补充（2026-10-19 本机实测）**：缺 BOM 不只是"中文乱码"——它会让 PS 5.1 **解析失败**。用一个**无 BOM、含中文注释**的脚本跑 `Parser::ParseFile`，报 `line 67 col 1: Unexpected token '}'`（该文件括号实为配平、终末 depth 为 0，正文完全合法），补一个 BOM 后 `parseErrors` 立刻归 0。原因：无 BOM 时 PS 5.1 按 ANSI 代码页解码，中文注释字节被曲解后撞坏词法分析，症状表现为"看起来像语法错误、但人眼查不出错"的假报错。故"含非 ASCII ⇒ 必须带单 BOM"是**解析正确性**要求，不是观感要求。
+
 ### 1.2 PS 5.1 的 `Out-File -Encoding utf8` 会写 BOM
 
 * **现象**：即使脚本解析正确，写出的 release-notes.md / build-info.json 仍可能带 BOM，GitHub 正文开头出现残留字符。
@@ -368,3 +370,10 @@ if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
 ```
 
 * **本机复现验证**：构造两份 mock `objdump -p` 输出（表头分别写作 `[Ordinal/Name Pointer] Table` 与 `[Name Pointer/Ordinal] Table`，都含一行 `[   0] shim_match_template` 与若干 `[   N] +base[   M] 1234 Export RVA` 干扰行），整段扫描法对两份都稳定提取**恰一条** `shim_match_template`；纯干扰行输出提取 0 条（不会误配）。
+
+## 31. `objdump -p` 的导出名解析第二次仍为空——放弃文本解析，改为直读 PE 导出目录
+
+* **现象（2026-10 CI 实测，gnu 路线 shim 单导出闸门）**：按 §30 改成"整段逐行按条目形状筛选"后，CI **仍然**报 `exports: ` 为空、`expected exactly one export 'shim_match_template', got: ` 并 exit 1。至此三轮写法（`Select-String` 取表头行号切片 → 显式索引定位表头收集 → 整段形状筛选）全部拿到空集合，而**同一份 `objdump -p` 输出、同一套捕获管线**在紧邻的**导入表**闸门里正常工作（`Select-String 'DLL Name:'` 有真实结果）——说明 stdout 捕获没问题，问题就在"导出表这一段文本本身"。
+* **根因（收敛结论）**：`objdump` **是否打印导出表、以及怎么排版**取决于 bfd 后端与该次 binutils 构建，不是一份稳定契约。只要判据依赖它的**人类可读文本**，就会随工具链版本/布局漂移而落空；继续换正则写法只是把同一个脆弱点换个马甲（§30 的整段扫描已经是当时能想到的最宽松写法，仍然为空）。
+* **规则**：要断言 PE 产物的**导出面/导入面**时，**不要解析 `objdump`/`dumpbin` 的文本**，直接读 PE 头部——导出：`DataDirectory[0]` → `IMAGE_EXPORT_DIRECTORY` → `AddressOfNames`（+24 `NumberOfNames`、+32 `AddressOfNames`）；导入：`DataDirectory[1]` → `IMAGE_IMPORT_DESCRIPTOR` → `Name`。判据只依赖 PE 规范（多年稳定），与任何工具的输出格式无关。仓库落地为 [scripts/get-pe-exports.ps1](../scripts/get-pe-exports.ps1)：`Get-PeExportName -Path <pe>` 返回导出名数组，`build-opencv-shim.yml` 的 gnu 单导出闸门改为 dot-source 它、断言 `$names` 恰为 `@('shim_match_template')`；判据不符时把 PE 读到的清单写进异常消息，另 dump 整段 `objdump -p` 供事后比对。
+* **本机验证（真实系统 DLL，非 mock）**：`C:\Windows\System32\kernel32.dll`（**PE32+**，走 `optOff+112` 分支）解析出 1633 个导出，含 `CreateFileW`/`LoadLibraryW`/`GetProcAddress`/`VirtualAlloc`；`C:\Windows\SysWOW64\kernel32.dll`（**PE32**，走 `optOff+96` 分支）1607 个、含 `CreateFileW`；`ole32.dll` 546 个（含 `CoCreateGuid`）；`gdi32.dll` 973 个（含 `BitBlt`）——两条 Optional Header 分支都被真实数据覆盖。RVA→文件偏移的节表映射用 `max(VirtualSize, RawSize)` 判归属，兼容未初始化数据节。

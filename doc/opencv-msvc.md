@@ -85,8 +85,8 @@ ABI 一致；STL 不出 shim 边界），导出面不变。链接期本身也是
 ### 3.4 导出面：单导出 `shim_match_template`
 
 shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在两条路线都作为产物闸门
-执行（gnu 路线 `objdump -p` 断言导出名表只有一个 `shim_match_template`，msvc 路线
-`dumpbin /EXPORTS` 断言该符号存在）。
+执行（gnu 路线**直读 PE 导出目录**断言导出名恰只有 `shim_match_template`，msvc 路线
+`dumpbin /EXPORTS` 断言该符号存在；见 §4 的验证闸门）。
 
 ## 4. 构建步骤（已落地于 workflow 的 `msvc` job）
 
@@ -158,12 +158,13 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
    msvc 闸门是**黑名单式**（`VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_`），
    `ole32.dll` 本就不在其内、无需改动。
 
-   gnu 的**单导出闸门**（`objdump -p` 断言导出名恰有 `shim_match_template`）不做表头定位/区段切片：
-   先把整段输出收进变量、校验退出码并断言非空，再对**整段**逐行 `Trim()` 后按条目形状
-   `^\[\s*\d+\]\s+(\S+)$` 筛选（只命中导出名；Export Address Table 的
-   `[   N] +base[   M] 1234 Export RVA` 因含空格 token 不会误配）。这样不依赖表头措辞、
-   不依赖各表/区段在输出中的相对顺序，也避开 `Select-String` 的 `.LineNumber`（它映射不到
-   原生命令捕获数组的下标）；解析不符预期时 dump **整段**原始输出自诊断（见 [lessons.md](lessons.md) §30）。
+   gnu 的**单导出闸门**不再解析 `objdump` 文本：改用 [scripts/get-pe-exports.ps1](../scripts/get-pe-exports.ps1)
+   按 PE 头部 `DataDirectory[0]` → `IMAGE_EXPORT_DIRECTORY` → `AddressOfNames` 直取导出名，
+   断言恰只有 `shim_match_template`（PE32 / PE32+ 通吃，无外部工具、不加载目标 DLL）。
+   这是权威且与 `objdump`/`dumpbin` 的措辞、binutils 版本、表格/区段顺序**全部解耦**的判据：
+   此前三轮逐行文本方案（表头切片 / 显式索引收集 / 整段形状正则）在 CI 上连续返回空列表、
+   闸门误报，根因就在"依赖人类可读文本"本身（见 [lessons.md](lessons.md) §30、§31）。
+   判据不符时把 PE 读到的清单直接写进异常消息，并另 dump 整段 `objdump -p` 供事后比对。
 
 ## 5. FFI 内存边界规则（固化条款）
 

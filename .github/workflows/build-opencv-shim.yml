@@ -195,31 +195,25 @@ jobs:
         shell: powershell
         run: |
           # The FFI contract is a one-function C surface, so assert it here too
-          # (the msvc route does the same with dumpbin /EXPORTS).
-          # Capture the whole output into a variable first, then validate both the
-          # exit code and non-emptiness before parsing (repo rule: never pipe a
-          # native command straight into a filter).
-          $out = & "$PWD\tools\mingw64\bin\objdump.exe" -p out-gnu\opencv_shim.dll
-          if ($LASTEXITCODE -ne 0) { throw "objdump -p failed: $LASTEXITCODE" }
-          if (-not $out) { throw 'objdump -p produced no output for opencv_shim.dll' }
-          # Scan the WHOLE output for export-name entries instead of slicing a
-          # region after a table header. objdump prints export names as
-          # "<tab>[   N] name"; Export Address Table lines
-          # ("[   N] +base[   M] 1234 Export RVA") carry extra space-separated
-          # tokens and never match this shape. This is independent of the table
-          # header wording and of table/section ordering across binutils versions,
-          # and avoids Select-String's unreliable .LineNumber on a captured array.
-          $names = @()
-          foreach ($raw in $out) {
-            $line = $raw.Trim()
-            if ($line -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1] }
-          }
+          # (the msvc route checks the same surface with dumpbin /EXPORTS).
+          #
+          # Read the PE export directory directly instead of parsing objdump's
+          # human-readable text. That text parse repeatedly came back EMPTY on CI
+          # ("got:") although the symbol IS exported: whether objdump emits the
+          # export table at all -- and how it words it -- depends on the bfd
+          # backend and the binutils build, so it is not a stable contract to
+          # assert on. The PE header is: DataDirectory[0] -> IMAGE_EXPORT_DIRECTORY
+          # -> AddressOfNames. scripts\get-pe-exports.ps1 reads exactly that (no
+          # external tool, no text parsing) and is verified against real system
+          # DLLs, both PE32+ and PE32.
+          . .\scripts\get-pe-exports.ps1
+          $names = @(Get-PeExportName -Path 'out-gnu\opencv_shim.dll')
           Write-Host "exports: $($names -join ', ')"
           if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
-            # Dump the ENTIRE objdump output so any format surprise is fully
-            # self-diagnosing on the next run instead of failing silently.
-            Write-Host '--- raw objdump -p output (all lines) ---'
-            $out | ForEach-Object { Write-Host $_ }
+            # Keep the raw objdump output as a secondary, human-readable record.
+            Write-Host '--- raw objdump -p output (all lines, for reference) ---'
+            & "$PWD\tools\mingw64\bin\objdump.exe" -p out-gnu\opencv_shim.dll |
+              ForEach-Object { Write-Host $_ }
             throw "expected exactly one export 'shim_match_template', got: $($names -join ', ')"
           }
 
