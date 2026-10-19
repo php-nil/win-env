@@ -48,12 +48,28 @@ OpenCV 的 pthreads 并行框架 `WITH_PTHREADS_PF` **默认 ON 且在 MinGW 上
 成立，根 `CMakeLists.txt` 在配置末尾以
 `FATAL_ERROR "Thread execution might be in use in some component."` 中止。
 
+关掉并行框架只是必要的一半。CI 实测（2026-10）gnu 路线的导入表闸门仍看到
+`libwinpthread-1.dll`——因为 WinLibs `x86_64-posix-seh` 是 **POSIX 线程模型**：
+即便 `-static-libstdc++` 把 libstdc++ 静态链入，**静态 libstdc++ 自身仍动态导入**
+`libwinpthread-1.dll`（线程原语走它），而 `-static-libgcc`/`-static-libstdc++`
+都**不含** libwinpthread，故两个开关都设了也消不掉。shim 的
+[CMakeLists.txt](../builders/opencv-shim/CMakeLists.txt) 因此改用 `-static`
+（**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）。OS CRT
+（msvcrt / ucrtbase）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，
+`KERNEL32.dll` 同理——这正是闸门允许的范围。
+
 ### 3.2 CRT/UCRT 全静态，零运行时依赖
 
 /MT 下 `libucrt.lib` 静态链入 UCRT（无伴随 DLL），编译器层 CRT 亦静态；
 `BUILD_WITH_STATIC_CRT=ON` 官方即为静态构建设计（静态构建默认 ON）。
 **一致性要求**：shim 与 OpenCV 静态库必须同一 CRT——本方案两侧均 /MT。
 静态 OpenCV 链入自研 DLL 是通行做法（vcpkg `x64-windows-static` triplet 即此形态）。
+
+两条路线的最终导入闭包都**只允许 OS DLL**：`KERNEL32.dll` + `ole32.dll` + OS CRT
+（gnu 为 `msvcrt.dll` 或 `ucrtbase.dll` + `api-ms-win-crt-*.dll`，msvc /MT 下为无）。
+`ole32.dll` 是 Windows 自带组件（OpenCV core `modules/core/src/system.cpp` 的
+`cv::tempfile` 调用 `CoCreateGuid`；msvc 路线因此显式链 `ole32.lib`），与
+`KERNEL32.dll` 同一类，属 **OS 组件而非可再发行运行库**，故计入允许集，不算"运行时依赖"。
 
 ### 3.3 shim 只用 C API：5 个符号，闸门 + 后备
 
@@ -134,6 +150,13 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
    只会把碎片当独立实参交给 cmd，得到 `'""' is not recognized as an internal or external command`，
    闸门其实什么都没跑（见 [lessons.md](lessons.md) §4.7）。依赖闸门还断言 `$deps` 非空——
    导入表为空只可能是 dumpbin 没跑起来（KERNEL32 恒在），不得当成"无违规依赖"放行。
+
+   gnu 路线对应闸门（`objdump -p`）是**白名单式**：只放行 OS DLL——`KERNEL32.dll`、
+   `ole32.dll` 与工具链自身的 CRT（`msvcrt.dll`，或 ucrt 的 `ucrtbase.dll` +
+   `api-ms-win-crt-*.dll`），任何 C++（`libstdc++-6.dll`/`libgcc_s_seh-1.dll`/
+   `libwinpthread-1.dll`）或 OpenCV 依赖即判失败（见 [lessons.md](lessons.md) §29）。
+   msvc 闸门是**黑名单式**（`VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_`），
+   `ole32.dll` 本就不在其内、无需改动。
 
 ## 5. FFI 内存边界规则（固化条款）
 

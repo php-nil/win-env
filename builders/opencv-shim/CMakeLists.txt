@@ -22,7 +22,16 @@ target_link_libraries(opencv_shim PRIVATE ${OpenCV_LIBS})
 # is not used, then this links against the shared version"). Leaving the defaults
 # would drag libstdc++-6.dll / libgcc_s_seh-1.dll into the delivery and break the
 # single-file, self-contained contract that the workflow's dependency gate
-# enforces. Link both statically; the OS CRT (msvcrt / ucrtbase) stays dynamic.
+# enforces.
+#
+# -static-libgcc -static-libstdc++ alone is NOT enough on the WinLibs
+# x86_64-posix-seh toolchain: it uses the POSIX thread model, so even the static
+# libstdc++ keeps a dynamic import of libwinpthread-1.dll (CI fact: the gnu gate
+# saw libwinpthread-1.dll in the import table while both flags were already set).
+# Use -static instead -- a superset that static-links libgcc, libstdc++ AND
+# libwinpthread. The OS CRT has no static form on MinGW (only import libs), so
+# msvcrt.dll / ucrtbase.dll stay dynamic imports, as does KERNEL32.dll -- which is
+# exactly what the gate allows.
 if(MINGW)
-  target_link_options(opencv_shim PRIVATE -static-libgcc -static-libstdc++)
+  target_link_options(opencv_shim PRIVATE -static)
 endif()

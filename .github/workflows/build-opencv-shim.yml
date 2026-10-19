@@ -2,18 +2,19 @@
 #
 # Manually package opencv_shim.dll for BOTH toolchains:
 #   gnu  : MinGW static OpenCV (current delivery route)  -> self-contained shim
-#          (imports only KERNEL32.dll + the OS CRT: msvcrt.dll for the msvcrt toolchain
-#          flavour, ucrtbase.dll + api-ms-win-crt-*.dll for the ucrt one). Reuses
+#          (imports only OS DLLs: KERNEL32.dll + ole32.dll + the OS CRT -- msvcrt.dll
+#          for the msvcrt toolchain flavour, ucrtbase.dll + api-ms-win-crt-*.dll for the
+#          ucrt one; no libstdc++ / libgcc / libwinpthread). Reuses
 #          builders/opencv-shim/setup-mingw.ps1 and builders/opencv-shim/build.ps1.
 #   msvc : static OpenCV (/MT, OPENCV_DISABLE_THREAD_SUPPORT=ON) + cl /MT shim
-#          (doc/opencv-msvc-plan.md) -> single-file shim, zero runtime deps.
+#          (doc/opencv-msvc.md) -> single-file shim, zero runtime deps.
 #
 # Trigger: Actions -> "Build OpenCV Shim" -> Run workflow (choose route + version).
 #   Version is never hardcoded: leave it empty to resolve the latest OpenCV 4.x tag
 #   from the GitHub tags API (5.x is never picked), or pin one explicitly.
 # Artifacts: opencv_shim-gnu / opencv_shim-msvc (each contains opencv_shim.dll).
 # NOTE: this workflow only produces raw DLL artifacts (no installer); the gates
-# documented in doc/opencv-msvc-plan.md are enforced in-job before upload.
+# documented in doc/opencv-msvc.md are enforced in-job before upload.
 
 name: Build OpenCV Shim
 
@@ -113,11 +114,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build-mingw
-          # -v2: the OpenCV configure flags changed (added -DWITH_ADE=OFF), so a
-          # build tree cached under -v1 would carry a stale WITH_ADE:ON CMakeCache
-          # and the ade export entry. Force a clean reconfigure rather than rely on
-          # CMake's cache-var-change path to regenerate OpenCVModules.cmake.
-          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v2
+          # -v3: the shim link flags changed (CMakeLists.txt now uses -static to
+          # static-link libwinpthread-1.dll). The shim is configured into
+          # <BuildDir>\shim, i.e. inside this cached tree, so a tree restored from
+          # -v2 carries a stale shim CMakeCache and would keep the old -static-libgcc
+          # -static-libstdc++ flags. Bump to force a clean reconfigure.
+          # (-v2 was: OpenCV configure flags changed -- added -DWITH_ADE=OFF -- so a
+          # -v1 tree would carry a stale WITH_ADE:ON CMakeCache and the ade export.)
+          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v3
 
       - name: Setup portable MinGW
         shell: powershell
@@ -177,9 +181,13 @@ jobs:
           # Allowed: KERNEL32 plus the toolchain's own OS CRT. setup-mingw.ps1 accepts
           # whichever flavour WinLibs publishes for x86_64-posix-seh, and the current
           # releases only ship the ucrt one (ucrtbase.dll + api-ms-win-crt-*.dll); the
-          # older msvcrt flavour imports msvcrt.dll instead. Anything C++ (libstdc++-6.dll,
-          # libgcc_s_seh-1.dll) or OpenCV would mean the single-file contract is broken.
-          $allowed = @('KERNEL32.dll', 'msvcrt.dll', 'ucrtbase.dll')
+          # older msvcrt flavour imports msvcrt.dll instead. ole32.dll is a Windows OS
+          # DLL (same class as KERNEL32), pulled by OpenCV core's CoCreateGuid
+          # (cv::tempfile in modules/core/src/system.cpp) -- an OS component, not a
+          # redistributable runtime, so it is allowed too. Anything C++ (libstdc++-6.dll,
+          # libgcc_s_seh-1.dll, libwinpthread-1.dll) or OpenCV would mean the single-file
+          # contract is broken.
+          $allowed = @('KERNEL32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'ole32.dll')
           $bad = $deps | Where-Object { $allowed -notcontains $_ -and $_ -notmatch '^api-ms-win-' }
           if ($bad) { throw "unexpected imports: $($bad -join ', ') (shim must stay self-contained)" }
 
@@ -405,7 +413,9 @@ jobs:
           # KERNEL32 is always imported, so no imports cannot be a valid result.
           if (-not $deps) { throw 'dumpbin produced no dependency list - the gate did not run' }
           # /MT should give us KERNEL32 (+ possibly api-ms-win-core-* base on Win10+).
-          # Anything CRT / OpenCV / concrt leaks is a real problem.
+          # Anything CRT / OpenCV / concrt leaks is a real problem. ole32.dll
+          # (CoCreateGuid, same OS DLL the gnu route imports) is not a runtime and
+          # is deliberately absent from this deny list.
           $deny = 'VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_'
           $bad = $deps | Where-Object { $_ -match $deny }
           if ($bad) { throw "forbidden imports: $($bad -join ', ')" }

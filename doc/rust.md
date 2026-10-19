@@ -9,7 +9,7 @@
 | `Languages/ChineseSimplified.isl` | 安装向导简体中文语言包（官方 Inno Setup 安装包不含此文件，必须随仓库携带） |
 | `setup.ico` | 安装器图标（Rust 官方图标，随仓库保存） |
 
-> 方案可行性、许可风险与历史验证记录见 [rust-msvc-plan.md](rust-msvc-plan.md)（实施前的调研文档，非本链路权威说明）。
+> 方案可行性、许可风险与历史验证记录见 [rust-msvc.md](rust-msvc.md)（实施前的调研文档，非本链路权威说明）。
 
 ## 1. 产物规格
 
@@ -120,7 +120,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 ## 7. 已知限制
 
-- **许可**：包内含从微软官方 CDN 提取的 CRT/SDK 文件，微软条款要求再分发对象为"已授权的 Visual Studio 使用者"，用户需自行确认。见 [rust-msvc-plan.md §五](rust-msvc-plan.md)。
+- **许可**：包内含从微软官方 CDN 提取的 CRT/SDK 文件，微软条款要求再分发对象为"已授权的 Visual Studio 使用者"，用户需自行确认。见 [rust-msvc.md §五](rust-msvc.md)。
 - **PDB / 调试信息**：MSVC 目标用 **CodeView / PDB**，调试器为 VS / WinDbg / CDB（`gdb` / `lldb` 读不了 PDB，它们要 DWARF，只有 `*-windows-gnu` 目标才产出 DWARF）。官方 LLD 文档明确声明其 PDB 与 `link.exe` **同级（at parity）**，唯一缺口是已废弃的 `/DEBUG:FASTLINK`（VS 2026 起该选项已被移除）；另外 `link.exe` 在超大 PDB（单流 > ~2 GB）上会链接失败，LLD 反而更能扛。因此对**纯 Rust** 的调试体验，本包（LLD）与原生 `link.exe` 实际等同，发布构建更无影响。机器上已装 VS（C++ 工具 + Windows SDK）时，安装器会自动走官方 `link.exe` 路径、不写任何配置（见 §3），无需手工覆盖；只有在**无 VS** 的机器上才由本包提供 LLD 兜底，此时若确需 `link.exe`（如重度 C++ 互操作调试、Edit-and-Continue），再自备 VS 并设 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=link.exe`。
   - 提示：`cargo build` 的 debug profile 默认已带 `debug = true`（等价 `-C debuginfo=2`）；release 默认 `-C debuginfo=0`，如需发布版也能调试可显式设 `[profile.release] debug = true`。
 - **含 C 依赖的 crate**：包内不提供 `clang-cl`，此类 crate 需自行准备 C 编译器（如另装 LLVM）。`cc` crate 在 MSVC 目标下优先找 `cl.exe`。

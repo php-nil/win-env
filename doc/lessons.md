@@ -339,4 +339,9 @@ if ($code -ne 0) { throw ... }
 * **根因**：PS 5.1 拼原生命令命令行时不转义参数里的内嵌双引号（该行为到 PS 7 才改善），双引号被解析层吃掉后，剩余文本再按空格分词。
 * **规则**：向 `python -c` / `node -e` / `perl -e` 这类命令传脚本载荷时，载荷内部**只用单引号**，PS 侧用双引号字符串包住它（`-c "print(t.eval('info patchlevel'))"`）；确实需要内嵌双引号或多行时，写临时 `.ps`/`.py` 文件或经 stdin 送入，别把它塞进命令行。
 
+## 29. MinGW（posix 线程模型）下 `-static-libgcc -static-libstdc++` 消不掉 `libwinpthread-1.dll`
 
+* **现象（2026-10 CI 实测，gnu 路线 shim 导入表闸门）**：`imports: api-ms-win-crt-*.dll…, KERNEL32.dll, libwinpthread-1.dll, ole32.dll`，闸门报 `unexpected imports: libwinpthread-1.dll, ole32.dll (shim must stay self-contained)` 并 exit 1。该闸门此前从未真正跑到（更早阶段就失败），这是首次看到真实导入表。
+* **根因（`libwinpthread-1.dll` 部分）**：WinLibs `x86_64-posix-seh` 是 **POSIX 线程模型**。`-static-libstdc++` 只把 libstdc++ **库本身**静态链入，但**静态 libstdc++ 内部仍动态导入 `libwinpthread-1.dll`**（线程原语走它），而 `-static-libgcc`/`-static-libstdc++` 都**不含** libwinpthread——所以两个开关都设了也消不掉。仅关 OpenCV 的 pthreads 并行框架（`-DWITH_PTHREADS_PF=OFF`）同样不够。
+* **规则**：MinGW 上要"单文件、零 C++ 运行库依赖"，用 `-static`（**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）而不是只加 `-static-libgcc -static-libstdc++`。OS CRT（`msvcrt.dll`/`ucrtbase.dll`）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，`KERNEL32.dll` 同理——这属于允许范围。
+* **附带（`ole32.dll` 部分）**：`ole32.dll` 是 Windows 自带 OS 组件（OpenCV core `modules/core/src/system.cpp` 的 `cv::tempfile` 用 `CoCreateGuid`），与 `KERNEL32.dll` 同一类，**不是**可再发行运行库，不应判为"破坏自包含"——闸门白名单须纳入它。msvc 路线链接 `ole32.lib` 也会导入该 DLL。
