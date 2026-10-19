@@ -345,3 +345,26 @@ if ($code -ne 0) { throw ... }
 * **根因（`libwinpthread-1.dll` 部分）**：WinLibs `x86_64-posix-seh` 是 **POSIX 线程模型**。`-static-libstdc++` 只把 libstdc++ **库本身**静态链入，但**静态 libstdc++ 内部仍动态导入 `libwinpthread-1.dll`**（线程原语走它），而 `-static-libgcc`/`-static-libstdc++` 都**不含** libwinpthread——所以两个开关都设了也消不掉。仅关 OpenCV 的 pthreads 并行框架（`-DWITH_PTHREADS_PF=OFF`）同样不够。
 * **规则**：MinGW 上要"单文件、零 C++ 运行库依赖"，用 `-static`（**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）而不是只加 `-static-libgcc -static-libstdc++`。OS CRT（`msvcrt.dll`/`ucrtbase.dll`）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，`KERNEL32.dll` 同理——这属于允许范围。
 * **附带（`ole32.dll` 部分）**：`ole32.dll` 是 Windows 自带 OS 组件（OpenCV core `modules/core/src/system.cpp` 的 `cv::tempfile` 用 `CoCreateGuid`），与 `KERNEL32.dll` 同一类，**不是**可再发行运行库，不应判为"破坏自包含"——闸门白名单须纳入它。msvc 路线链接 `ole32.lib` 也会导入该 DLL。
+
+## 30. 用 `Select-String` 的 `.LineNumber` 去切原生命令捕获的数组，会静默切错区域
+
+* **现象（2026-10 CI 实测，gnu 路线 shim 单导出闸门）**：闸门断言 `objdump -p` 的 `[Ordinal/Name Pointer] Table` 后恰有一条 `[   0] shim_match_template`，却报 `exports: ` 为空、`expected exactly one export 'shim_match_template', got: ` 并 exit 1。抛的是**数量**那条而非**找不到表头**那条，说明表头已匹配成功，但随后的切片一个条目都没提出来。
+* **根因**：代码用 `$header = $out | Select-String '…' | Select-Object -First 1`，再 `$out[($header.LineNumber)..($out.Count-1)]`。`$out` 是原生命令（`& objdump.exe`）捕获进变量的**数组**，而 `Select-String` 的 `.LineNumber` 并**不**映射为"该匹配在数组中的下标"，据此切片会落到错误区间，正则自然一条都提不到。正则本身 `^\s*\[\s*\d+\]\s+(\S+)\s*$` 与 binutils 的真实格式（`\t[   N] name`，已由官方文档/实测样例核对）是吻合的，故**不是正则问题**。
+* **规则**：解析原生命令（`objdump`/`dumpbin`/`gcc` …）的输出时——① 先把整段输出收进变量并校验 `$LASTEXITCODE`、断言非空（同 §4.7 的收口纪律）；② 定位"表头"用**显式索引 for 循环**（`$out[$i] -match '…'`），**不要**用 `Select-String` 的 `.LineNumber`；③ 在表头之后按行收集条目（先 `Trim()` 再 `-match`，首条非条目行即表尾）；④ 解析结果为 0 时 `Write-Host` dump 原始区段自诊断，不要只抛一句数量错误。
+
+```powershell
+$out = & objdump.exe -p $dll; if ($LASTEXITCODE -ne 0) { throw "objdump failed: $LASTEXITCODE" }
+$hdr = -1
+for ($i = 0; $i -lt $out.Count; $i++) { if ($out[$i] -match '\[Ordinal/Name Pointer\] Table') { $hdr = $i; break } }
+$names = @()
+if ($hdr -ge 0) {
+  for ($i = $hdr + 1; $i -lt $out.Count; $i++) {
+    $line = $out[$i].Trim()
+    if ($line -eq '') { continue }
+    if ($line -match '^\[\s*\d+\]\s+(\S+)$') { $names += $Matches[1]; continue }
+    break
+  }
+}
+```
+
+* **本机复现验证**：用一段仿真的 `objdump -p` 输出（含 Export Address Table 的 `[   N] +base[   M] 1234 Export RVA` 干扰行）跑上述逻辑，显式索引扫描稳定提取出**恰一条** `shim_match_template`，干扰行（多 token，不匹配 `^\[\s*\d+\]\s+(\S+)$`）不会误配。
