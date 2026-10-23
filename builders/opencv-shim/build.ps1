@@ -150,6 +150,12 @@ function Invoke-Configure {
         "-DWITH_OBSENSOR=OFF",
         # SSE4.2 baseline, no multi-version dispatch (much shorter build)
         "-DCPU_BASELINE=SSE4_2", "-DCPU_DISPATCH=",
+        # Size: split every function/data item into its own section so the
+        # shim's final link can --gc-sections unreferenced ones away (the shim
+        # also strips its symbol table; see CMakeLists.txt). MinGW Release
+        # defaults are exactly "-O3 -DNDEBUG" -- kept, then extended.
+        "-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -ffunction-sections -fdata-sections",
+        "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -ffunction-sections -fdata-sections",
         "-DOPENCV_GENERATE_PKGCONFIG=OFF",
         "-DOPENCV_GENERATE_SETUPVARS=OFF",
         "-DENABLE_CONFIG_VERIFICATION=OFF"

@@ -114,14 +114,15 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build-mingw
-          # -v3: the shim link flags changed (CMakeLists.txt now uses -static to
-          # static-link libwinpthread-1.dll). The shim is configured into
-          # <BuildDir>\shim, i.e. inside this cached tree, so a tree restored from
-          # -v2 carries a stale shim CMakeCache and would keep the old -static-libgcc
-          # -static-libstdc++ flags. Bump to force a clean reconfigure.
-          # (-v2 was: OpenCV configure flags changed -- added -DWITH_ADE=OFF -- so a
-          # -v1 tree would carry a stale WITH_ADE:ON CMakeCache and the ade export.)
-          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v3
+          # -v4: size flags changed -- OpenCV release objects are now compiled
+          # with -ffunction-sections -fdata-sections (CMAKE_*_FLAGS_RELEASE in
+          # build.ps1) and the shim link gained -s -Wl,--gc-sections, so both
+          # the OpenCV tree and the shim subtree (configured inside it, at
+          # <BuildDir>\shim) must reconfigure/recompile cleanly.
+          # (-v3 was: shim link flags changed -- CMakeLists.txt now uses
+          # -static to static-link libwinpthread-1.dll. -v2 was: OpenCV
+          # configure flags changed -- added -DWITH_ADE=OFF.)
+          key: opencv-mingw-build-${{ needs.resolve.outputs.opencv_version }}-v4
 
       - name: Setup portable MinGW
         shell: powershell

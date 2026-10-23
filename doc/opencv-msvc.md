@@ -88,6 +88,27 @@ shim 为**单导出**，按 §5 规则 R1–R5 审计全部合规。该断言在
 执行（gnu 路线**直读 PE 导出目录**断言导出名恰只有 `shim_match_template`，msvc 路线
 `dumpbin /EXPORTS` 断言该符号存在；见 §4 的验证闸门）。
 
+### 3.5 产物体积：gnu 侧为何大出一截，以及收敛（2026-10-23）
+
+CI artifact（zip 后大小）曾为 gnu ≈ 2.6 MB vs msvc ≈ 0.8 MB，裸 DLL 差距更大。
+两边链的是同一份静态 core+imgproc，差距来自 GNU 工具链的产物形态而非代码本身：
+
+| 来源 | 说明 |
+| --- | --- |
+| 符号表不 strip（最大头） | GNU ld 默认把完整 COFF 符号表（`.symtab`/`.strtab`）写进最终 DLL——静态链入 core+imgproc 后是几万个 OpenCV 内部符号名；MSVC link.exe 默认不往 DLL 写符号表（调试信息归 PDB，Release 连 PDB 都不需要） |
+| 无 `/OPT:REF`/`/OPT:ICF` 等价物 | MSVC Release 链接默认死代码剔除 + 相同 COMDAT 折叠；GNU ld 需要 `-ffunction-sections -fdata-sections` + `-Wl,--gc-sections` 才剔除，而 CMake 给 MinGW 的 Release 旗标只有 `-O3 -DNDEBUG` |
+| `-O3` 内联更激进（次要） | GCC Release 默认 `-O3` 的内联展开比 `cl /O2` 更膨胀代码段 |
+
+收敛（已落地）：OpenCV 的 Release 编译改以 `-ffunction-sections -fdata-sections`
+收尾（[build.ps1](../builders/opencv-shim/build.ps1) 覆写 `CMAKE_C_FLAGS_RELEASE`/
+`CMAKE_CXX_FLAGS_RELEASE`，保留 `-O3 -DNDEBUG` 原值再追加），shim 编译/链接在
+[CMakeLists.txt](../builders/opencv-shim/CMakeLists.txt) 的 MINGW 分支补同样的
+分段旗标与 `-s`（剥符号表）、`-Wl,--gc-sections`（按节裁剪；`shim_match_template`
+是导出根、必然保留）。闸门判据不受影响：导入/导出表是 PE 数据目录，与符号表
+无关，strip 后 `objdump -p` 与 `Get-PeExportName` 照常工作。gnu build-tree 缓存
+key 因编译/链接旗标变更升至 `-v4`（见
+[build-opencv-shim.yml](../.github/workflows/build-opencv-shim.yml)）。
+
 ## 4. 构建步骤（已落地于 workflow 的 `msvc` job）
 
 1. workflow 装 ninja；cmake 用 runner 预装的即可。

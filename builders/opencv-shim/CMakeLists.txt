@@ -33,5 +33,21 @@ target_link_libraries(opencv_shim PRIVATE ${OpenCV_LIBS})
 # msvcrt.dll / ucrtbase.dll stay dynamic imports, as does KERNEL32.dll -- which is
 # exactly what the gate allows.
 if(MINGW)
-  target_link_options(opencv_shim PRIVATE -static)
+  # Per-function/data sections so the linker can drop unreferenced ones below;
+  # the OpenCV static libs get the same flags from build.ps1
+  # (CMAKE_*_FLAGS_RELEASE), otherwise whole-object granularity makes
+  # --gc-sections nearly useless for library code.
+  target_compile_options(opencv_shim PRIVATE -ffunction-sections -fdata-sections)
+  # -static: see the libwinpthread rationale above.
+  # -s: strip the COFF symbol table from the final DLL. GNU ld keeps every
+  #     symbol of the statically linked OpenCV libs (tens of thousands of
+  #     names, MBs of .strtab) in the DLL; MSVC link.exe never writes a symbol
+  #     table into its output, which is why a cl-built shim of the same code
+  #     is a fraction of the size.
+  # -Wl,--gc-sections: drop unreferenced sections (the /OPT:REF equivalent
+  #     MSVC applies by default in Release). The exported shim_match_template
+  #     is a root, so the single-export contract is untouched; import/export
+  #     tables are PE data directories and survive stripping, so both gates
+  #     (objdump -p / Get-PeExportName) keep working.
+  target_link_options(opencv_shim PRIVATE -static -s -Wl,--gc-sections)
 endif()
