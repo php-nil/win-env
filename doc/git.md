@@ -14,7 +14,7 @@
 | --- | --- |
 | 产物文件 | `Git-<tag-version>-setup-x64.exe` |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `git-<tag-version>`（如 `git-2.56.0.windows.2`） |
+| Release 标签 | `git-<tag-version>`（如 `git-2.56.0.windows.2`）；另有常青别名 `git-latest`（资产名固定 `git-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 Git for Windows 发行版（自解压 7z 包整包提取）· x64 |
 | 默认安装目录 | `C:\pf\Git`（安装向导中可修改，**不带主版本号后缀**） |
 | 安装后命令 | `git`（`<安装目录>\cmd` 强制加入系统 PATH，新开命令行即可用；附带 `git-bash`、`ssh`、`bash` 等工具） |
@@ -34,7 +34,7 @@
 | `git_version` | 不带 `v` 的精确 tag 名，如 `2.56.0.windows.2`；留空则自动取最新稳定版（跳过 prerelease/draft，且必须携带 64 位自解压包） |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `git-<tag-version>` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `git-<tag-version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `git-setup-x64.exe` 覆盖到常青别名 `git-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

@@ -69,7 +69,16 @@ jobs:
             build/output/build-info.json
             build/output/release-notes.md
 
+      - name: Check versioned release
+        id: rel
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\test-release-published.ps1 -Tag 'postgres-${{ steps.build.outputs.pg_version }}'
+
       - name: Publish GitHub release
+        if: steps.rel.outputs.published != 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: postgres-${{ steps.build.outputs.pg_version }}
@@ -80,3 +89,11 @@ jobs:
             build/output/*.exe
             build/output/*.sha256.txt
             build/output/build-info.json
+
+      - name: Publish evergreen alias release
+        if: ${{ !inputs.draft_release }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\publish-alias-release.ps1 -Env 'postgres' -Version '${{ steps.build.outputs.pg_version }}' -AssetPath 'build/output/${{ steps.build.outputs.setup_name }}' -VersionedTag 'postgres-${{ steps.build.outputs.pg_version }}' -DisplayName 'PostgreSQL'

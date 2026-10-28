@@ -15,7 +15,7 @@
 | --- | --- |
 | 产物文件 | `node-<version>-setup-x64.exe`（约 25.4 MiB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测 24.21.0） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `node-<version>` |
+| Release 标签 | `node-<version>`；另有常青别名 `node-latest`（资产名固定 `node-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 `node-v<version>-win-x64.zip` 完整解压树 · x64 · LTS（当前线 Krypton） |
 | 默认安装目录 | `C:\pf\node`（安装向导中可修改，**不带版本号后缀**） |
 | 安装后命令 | `node`、`npm`、`npx`（安装目录强制加入系统 PATH，新开命令行即可用；corepack 随包提供） |
@@ -36,7 +36,7 @@
 | `major_track` | 自动发现限定主版本轨道，如 `24`；留空 = 任意 LTS 轨道取最新。`node_version` 显式指定时此项被忽略 |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `node-<version>` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `node-<version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `node-setup-x64.exe` 覆盖到常青别名 `node-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

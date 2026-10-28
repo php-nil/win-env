@@ -15,7 +15,7 @@
 | --- | --- |
 | 产物文件 | `python-<version>-setup-x64.exe`（约 17.8 MiB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测 3.15.0） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `python-<version>` |
+| Release 标签 | `python-<version>`；另有常青别名 `python-latest`（资产名固定 `python-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 `python-<version>-amd64.zip`（install manager 的 **pythoncore 可重定位**布局）· x64 · GIL（非 free-threaded） |
 | 默认安装目录 | `C:\pf\python`（安装向导中可修改；需要多版本并存时改到不同目录） |
 | 安装后命令 | `python`、`pythonw`、`pip`（安装目录强制加入系统 PATH，新开命令行即可用；`pip` 由构建期生成的 `pip.cmd` 提供） |
@@ -40,7 +40,7 @@
 | `major_track` | 自动发现限定轨道（major.minor），如 `3.14`；留空 = 任意轨道取最新。`python_version` 显式指定时此项被忽略 |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `python-<version>` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `python-<version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `python-setup-x64.exe` 覆盖到常青别名 `python-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

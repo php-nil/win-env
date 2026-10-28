@@ -17,7 +17,7 @@
 | --- | --- |
 | 产物文件 | `postgres-<version>-setup-x64.exe`（约 27.5 MiB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测 18.6；裁剪前约 344 MB 的官方 zip 经裁剪后约 170 MB 暂存树压到该体积） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `postgres-<version>`（如 `postgres-18.6`） |
+| Release 标签 | `postgres-<version>`（如 `postgres-18.6`）；另有常青别名 `postgres-latest`（资产名固定 `postgres-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | EDB 官方 `postgresql-<version>-<rev>-windows-x64-binaries.zip` 解压树（拍平 `pgsql\` 根目录）· x64 · 命令行/扩展开发用途 |
 | 默认安装目录 | `C:\pf\postgres-<major>`（安装向导中可修改，**只带主版本号后缀**：minor 升级替换同一实例、沿用同一 `data\`） |
 | 安装后命令 | `psql`、`pg_ctl`、`initdb`、`pg_dump`、`pg_restore`、`createdb` 等（安装目录的 `bin` 强制加入系统 PATH）；管理脚本 `pg-start`、`pg-stop`、`pg-restart`、`pg-status` 同处 `bin` |
@@ -40,7 +40,7 @@
 | `pg_major` | 自动发现限定主版本，如 `18`（**要求 ≥ 17**，见 §6）；留空 = 最高 supported 主版本。`pg_version` 显式指定时此项被忽略 |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `postgres-<version>` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `postgres-<version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `postgres-setup-x64.exe` 覆盖到常青别名 `postgres-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

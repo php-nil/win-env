@@ -17,7 +17,7 @@
 | --- | --- |
 | 产物文件 | `rust-<version>-msvc-setup-x64.exe`（LZMA2 固实压缩 + 128 MB 字典；2026-10 实测 1.99.1 约 166 MiB，新增 rustfmt/clippy 组件后的体积以 CI 实测为准） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `rust-<version>-msvc` |
+| Release 标签 | `rust-<version>-msvc`；另有常青别名 `rust-latest`（资产名固定 `rust-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 Rust 组件归档（`rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview`）· x86_64-pc-windows-msvc · stable channel |
 | 默认安装目录 | `C:\pf\rust`（安装向导中可修改，**不带版本号后缀**） |
 | 安装后命令 | `rustc`、`cargo`、`rustfmt`、`cargo fmt`、`cargo clippy`（安装目录的 `bin` 加入系统 PATH，`%USERPROFILE%\.cargo\bin` 加入用户 PATH，新开命令行即可用） |
@@ -37,7 +37,7 @@
 | `rust_version` | 不带 `v` 的精确版本号，如 `1.99.1`；留空则从官方 `channel-rust-stable.toml` 取最新 stable |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `rust-<version>-msvc` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `rust-<version>-msvc` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `rust-setup-x64.exe` 覆盖到常青别名 `rust-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

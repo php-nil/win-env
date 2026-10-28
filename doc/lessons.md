@@ -99,6 +99,12 @@ $text = [Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
 * **根因**：CRLF 文本中 `$` 落在 `\r` 之后，分组匹配失败。
 * **规则**：行内边界用 `\b` 锚定扩展名（如 `extension[ \t]*=[ \t]*mysqli\b`），不依赖行尾。
 
+### 3.3 PS 5.1 的 `ConvertFrom-Json` 不展开 JSON 数组
+
+* **现象**：`'["a","b"]' | ConvertFrom-Json` 放进 `@()` 后 `Count` 是 **1**，`-contains 'a'` 恒为 false——用它比对 release 资产名时，齐全的资产清单会被误判成"缺资产"，脚本 throw。
+* **根因**：PS 5.1 的 `ConvertFrom-Json` 把整个 JSON 数组当作**单个** `Object[]` 对象返回，`@()` 再包一层仍是 1 个元素（PS 7 才按管道展平）。
+* **规则**：机器判据优先让 `--jq` / `-o` 直接输出逐行文本，再用 `-split "`r?`n"` 拆数组；必须解析 JSON 数组时双层展开 `foreach ($x in @($json | ConvertFrom-Json)) { foreach ($y in @($x)) { ... } }`。本仓库 `publish-alias-release.ps1` 的资产闸门用 `--jq '.assets[].name'` 逐行解析。
+
 ## 4. PowerShell 调用原生命令
 
 ### 4.1 给 php.exe 传 `-r` 代码极易被拆词/吞变量
@@ -222,6 +228,7 @@ if ($code -ne 0) { throw ... }
 * **根因**：cargo 把全部人读进度（`Creating binary`、`Compiling`、`Finished`）写到 **stderr**。PowerShell 5.1 在 `$ErrorActionPreference='Stop'` 下，一旦原生命令的 stderr 被 `2>&1` 重定向进管道，就会把**第一行 stderr** 当成终止性 `NativeCommandError` 抛出——与命令真实退出码无关，命令其实成功了。
 * **规则**：凡需要 `2>&1` 收集原生命令（cargo/rustc/clang/npm 等）输出，调用前后必须临时切 `$ErrorActionPreference='Continue'` 并在 `finally` 还原（本仓库 build.ps1 的两处 `--version` 检查与 cargo build 冒烟块都照此处理）。或者干脆**不重定向**，让 stderr 直接进主机（不重定向就不会触发该错误），只靠 `$LASTEXITCODE` 判成败。
 * **判定诀窍**：报错文本是命令行自身的正常输出、且 `FullyQualifiedErrorId` 为 `NativeCommandError` 时，几乎都是这个坑，而非命令真的失败。
+* **旁证（2026-10）**：`gh release view <tag>` 查不存在的 release 时把 `release not found` 写到 stderr、退出码 1——这是"该版本尚未发布"的**正常分支**，但 EAP=Stop + `2>&1` 会直接打挂步骤（本机复现：`test-release-published.ps1` 首行就抛 `NativeCommandError`）。按本条规则用局部 `EAP=Continue` 的 `Invoke-Gh` 包装、只取退出码与输出文本即可。
 
 ## 12. Rust dist 组件 tarball 内层目录名不一致（rust-std 带 target 后缀）
 

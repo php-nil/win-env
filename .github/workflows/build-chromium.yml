@@ -71,7 +71,16 @@ jobs:
             build/output/build-info.json
             build/output/release-notes.md
 
+      - name: Check versioned release
+        id: rel
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\test-release-published.ps1 -Tag 'chromium-${{ steps.build.outputs.chromium_version }}'
+
       - name: Publish GitHub release
+        if: steps.rel.outputs.published != 'true'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: chromium-${{ steps.build.outputs.chromium_version }}
@@ -82,3 +91,11 @@ jobs:
             build/output/*.exe
             build/output/*.sha256.txt
             build/output/build-info.json
+
+      - name: Publish evergreen alias release
+        if: ${{ !inputs.draft_release }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\publish-alias-release.ps1 -Env 'chromium' -Version '${{ steps.build.outputs.chromium_version }}' -AssetPath 'build/output/${{ steps.build.outputs.setup_name }}' -VersionedTag 'chromium-${{ steps.build.outputs.chromium_version }}' -DisplayName 'Chromium'

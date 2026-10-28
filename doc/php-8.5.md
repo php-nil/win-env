@@ -14,7 +14,7 @@
 | --- | --- |
 | 产物文件 | `php-<version>-setup-x64.exe`（约 25 MB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（组件版本/来源元数据） |
-| Release 标签 | `php-<version>` |
+| Release 标签 | `php-<version>`；另有常青别名 `php-latest`（资产名固定 `php-setup-x64.exe`，README 下载链接指向它） |
 | PHP 规格 | 8.5.x · NTS（非线程安全）· VS17 · x64 |
 | VC++ 运行库 | 内置（app-local）：vcruntime140 / msvcp140 等 7 个 CRT DLL 释放到安装目录，源自官方 vc_redist.x64.exe，版本记入 `build-info.json` |
 | 默认安装目录 | `C:\pf\php-8.5`（安装向导中可修改） |
@@ -37,7 +37,7 @@
 
 > Xdebug、APCu、Composer 不提供版本选项：一律自动取各自官方渠道的最新可用版本（明细见第 4 节）。
 
-3. 构建完成后在 **Releases** 的 `php-<version>` 标签下载安装包；工作流同时上传同名 build artifact。
+3. 构建完成后在 **Releases** 的 `php-<version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `php-setup-x64.exe` 覆盖到常青别名 `php-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 

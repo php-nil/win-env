@@ -14,7 +14,7 @@
 | --- | --- |
 | 产物文件 | `pwsh-<version>-setup-x64.exe` |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
-| Release 标签 | `pwsh-<version>`（如 `pwsh-7.6.7`） |
+| Release 标签 | `pwsh-<version>`（如 `pwsh-7.6.7`）；另有常青别名 `pwsh-latest`（资产名固定 `pwsh-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 PowerShell v7.6.x 发行版（win-x64 zip 整包提取）· x64 |
 | 默认安装目录 | `C:\pf\PowerShell7`（安装向导中可修改） |
 | 安装后命令 | `pwsh`（安装目录强制加入系统 PATH，新开命令行即可用） |
@@ -34,7 +34,7 @@
 | `pwsh_version` | 不带 `v` 的精确版本号，如 `7.6.6`；留空则自动取 v7.6 产品线最新稳定版（跳过 prerelease/draft，且必须携带 win-x64 zip 资产） |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
-3. 构建完成后在 **Releases** 的 `pwsh-<version>` 标签下载安装包；工作流同时上传同名 build artifact。同名标签重跑会就地更新该 Release。
+3. 构建完成后在 **Releases** 的 `pwsh-<version>` 标签下载安装包；工作流同时上传同名 build artifact。该标签已有公开（非草稿）Release 时本次不重复发布、不覆盖既有资产。随后把本次安装包以固定资产名 `pwsh-setup-x64.exe` 覆盖到常青别名 `pwsh-latest`（勾选 `draft_release` 时不更新），README 的下载链接只指向它。
 
 ## 3. 安装包行为
 
