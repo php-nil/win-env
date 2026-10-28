@@ -62,3 +62,10 @@ if ($env:GITHUB_OUTPUT) {
     "{0}={1}" -f $OutputName, $published.ToString().ToLower() |
         Out-File -FilePath $env:GITHUB_OUTPUT -Encoding ascii -Append
 }
+
+# GitHub Actions 的 powershell shell 会在步骤脚本末尾追加
+#   if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }
+# 于是 gh 探针留下的非 0 退出码会直接把步骤判失败——哪怕 "release not found" 是正常分支
+# （published=false 正是它的产物）。结论已经通过标准输出/GITHUB_OUTPUT 表达，这里显式清零；
+# 真正的异常（gh 缺失、throw 等）在此之前就已抛出，不受影响。
+$global:LASTEXITCODE = 0

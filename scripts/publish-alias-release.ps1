@@ -136,3 +136,10 @@ Write-Host "  alias tag : $aliasTag"
 Write-Host "  asset     : $aliasAssetName"
 Write-Host "  download  : $download"
 Write-Host "  proxy     : $proxy"
+
+# 与 test-release-published.ps1 同一规则：本脚本用 gh 做"别名 Release 是否存在"的探针，
+# "release not found" 属正常分支；GitHub Actions 的 powershell shell 会在步骤末尾追加
+#   if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }
+# 所以不能把任何 gh 的退出码留给步骤收尾。当前路径都以"必须成功、失败即 throw"的 gh 调用
+# 或资产闸门收尾，这里再显式清零一次，避免以后调整顺序时又踩同一个坑（真异常仍会 throw）。
+$global:LASTEXITCODE = 0

@@ -384,3 +384,16 @@ if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
 * **根因（收敛结论）**：`objdump` **是否打印导出表、以及怎么排版**取决于 bfd 后端与该次 binutils 构建，不是一份稳定契约。只要判据依赖它的**人类可读文本**，就会随工具链版本/布局漂移而落空；继续换正则写法只是把同一个脆弱点换个马甲（§30 的整段扫描已经是当时能想到的最宽松写法，仍然为空）。
 * **规则**：要断言 PE 产物的**导出面/导入面**时，**不要解析 `objdump`/`dumpbin` 的文本**，直接读 PE 头部——导出：`DataDirectory[0]` → `IMAGE_EXPORT_DIRECTORY` → `AddressOfNames`（+24 `NumberOfNames`、+32 `AddressOfNames`）；导入：`DataDirectory[1]` → `IMAGE_IMPORT_DESCRIPTOR` → `Name`。判据只依赖 PE 规范（多年稳定），与任何工具的输出格式无关。仓库落地为 [scripts/get-pe-exports.ps1](../scripts/get-pe-exports.ps1)：`Get-PeExportName -Path <pe>` 返回导出名数组，`build-opencv-shim.yml` 的 gnu 单导出闸门改为 dot-source 它、断言 `$names` 恰为 `@('shim_match_template')`；判据不符时把 PE 读到的清单写进异常消息，另 dump 整段 `objdump -p` 供事后比对。
 * **本机验证（真实系统 DLL，非 mock）**：`C:\Windows\System32\kernel32.dll`（**PE32+**，走 `optOff+112` 分支）解析出 1633 个导出，含 `CreateFileW`/`LoadLibraryW`/`GetProcAddress`/`VirtualAlloc`；`C:\Windows\SysWOW64\kernel32.dll`（**PE32**，走 `optOff+96` 分支）1607 个、含 `CreateFileW`；`ole32.dll` 546 个（含 `CoCreateGuid`）；`gdi32.dll` 973 个（含 `BitBlt`）——两条 Optional Header 分支都被真实数据覆盖。RVA→文件偏移的节表映射用 `max(VirtualSize, RawSize)` 判归属，兼容未初始化数据节。
+
+## 32. GitHub Actions 的 `powershell` shell 会把脚本内部残留的 `$LASTEXITCODE` 当成步骤退出码
+
+* **现象（2026-10-28 CI 实测，`build-git.yml` 的 `Check versioned release`）**：脚本输出 `release tag 'git-2.56.0.windows.4': published=False` 之后步骤立刻 `Process completed with exit code 1`——判据本身正确（该 tag 尚未发布，`published=false` 正是期望结果），失败来自退出码，而不是逻辑。
+* **根因**：`shell: powershell` 的步骤由 runner 成 `powershell.EXE -Command ". '<run>.ps1'"`，并在**步骤脚本末尾追加** `if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit $LASTEXITCODE }`。`gh release view <未发布的 tag>` 会以非 0 退出（`release not found`），该退出码在 `$LASTEXITCODE` 里留存下来；本脚本把这种情况当正常分支处理（`Invoke-Gh` 只回传退出码、不抛错），于是步骤末尾拿到的是 gh 的失败码，整步被判失败。换句话说：**"自检命令预期失败"必须自己把退出码收干净，不能指望"我没 throw 就没事"**。
+* **规则**：凡是用原生命令做**存在性/状态探针**、且探针失败属于正常分支的脚本，在脚本末尾显式 `$global:LASTEXITCODE = 0`（不要用 `exit 0`——脚本被 dot-source 时会把调用者的会话一起退掉）。真正的异常在此之前就已 `throw`，不受影响；用 `$global:` 而不是裸赋值，是为了让外层（runner 追加的那段）读到的就是 0。
+* **本机验证（复刻 runner 的包装 + mock `gh`，四条分支全跑）**：包装脚本 = `$ErrorActionPreference='stop'` + `& <script>` + runner 同款 `exit $LASTEXITCODE` 尾行；`build/probe/mockbin/gh.ps1` 分别模拟 create/出错：
+  * 未发布（stderr `release not found`、exit 1，即 CI 那次）：修复前 `exit=1`（与 CI 日志一致），修复后 `exit=0` 且 `GITHUB_OUTPUT` 写入 `published=false`；
+  * 草稿（`{"isDraft":true}`，exit 0）：`exit=0`、`published=false`（草稿不计入）；
+  * 已发布（`{"isDraft":false}`，exit 0）：`exit=0`、`published=true`；
+  * 真异常（PATH 里无 `gh`，`CommandNotFoundException`）：仍 `exit=1`——清零没有掩盖真实故障。
+* **落地**：[scripts/test-release-published.ps1](../scripts/test-release-published.ps1) 末尾加注释说明 + `$global:LASTEXITCODE = 0`，9 个 `build-*.yml` 的调用行无需改动；[scripts/publish-alias-release.ps1](../scripts/publish-alias-release.ps1) 含同类"别名 Release 是否存在"探针（当前各路径都以必须成功的 gh 调用/资产闸门收尾，只是**眼下**不触发），按同一规则补上清零与注释。本机用 mock `gh`（分别模拟不存在→create、已存在→upload+edit、资产缺失→throw）复跑该脚本三条路径：`exit=0` / `exit=0` / `exit=1`，与闸门语义一致。
+* **审计结论（2026-10-28，全仓库 15 个 `.ps1` + 所有 workflow `run` 块）**：仅 `test-release-published.ps1` 会踩中——10 个 `builders/*/build.ps1` 对每个非 0 一律 `throw`（`-SkipCompile` 下最后一个原生命令也是"非 0 即 throw"的冒烟测试），`setup-mingw.ps1` 探测 g++ 后即校验退出码，`check-ps1.ps1` / `get-pe-exports.ps1` 不含原生命令；workflow 里的定位/缓存/门禁步骤要么以成功命令收尾，要么显式 `throw`（opencv-shim 两条 dumpbin 闸门还额外断言"闸门确实跑过"）。
