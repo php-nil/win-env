@@ -108,7 +108,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 ## 6. 设计约定
 
 - **不硬编码补丁版本号**：运行时从官方 install-manager 索引解析最新正式版；解析为空立即终止报错，不猜测 URL。索引里的下载 URL 与 `hash.sha256` 是唯一权威来源，下载前先校验"渠道是 `www.python.org/ftp/python/`"与"资产名等于 `python-<ver>-amd64.zip`"。版本发现走 python.org（非 GitHub API），无速率限额问题。
-- **索引文档是对象不是数组**：`index-windows.json` 的顶层是 `{ "next": ..., "versions": [...] }`，条目在 `.versions`；把它当数组读会静默只得到 1 项、所有过滤落空（见 [经验教训 §27](lessons.md)）。
+- **索引文档是对象不是数组**：`index-windows.json` 的顶层是 `{ "next": ..., "versions": [...] }`，条目在 `.versions`；`Invoke-RestMethod` 把它反序列化成 `PSCustomObject`，`@($doc)` 只是把这一个对象包成单元素数组——当数组读会静默只得到 1 项（实际 258 条）、所有过滤落空，症状像"没有满足条件的版本"。条目字段：`id`、`company`、`sort-version`、`url`、`hash.sha256`、`display-name`；`id` 形如 `pythoncore-3.15-64`（`company` ∈ `PythonCore` / `PythonEmbed` / `PythonTest`，`arch` ∈ `32`/`64`/`arm64`），free-threaded 线把 `t` 挂在次版本号后（`pythoncore-3.15t-64`），与锚定正则 `^pythoncore-\d+\.\d+-64$` 天然不相交。`sort-version` 是排序键：正式版是纯 `x.y.z`，预发布带后缀（`3.16.0a1`、`3.15.0b3`）——存在 `pythoncore-3.16-64` 这种"新轨道但只有 alpha"的条目，必须加 `sort-version -match '^\d+\.\d+\.\d+$'` 才不会被它顶掉（否则 `[version]'3.16.0a1'` 转换也会直接抛错）。解析前先打印顶层属性名（`Get-Member -MemberType NoteProperty`）确认形态。
 - 暂存目录（`build/stage/python`）根目录即安装后的 `C:\pf\python`，安装器只负责原样释放与 PATH 改写。与 Node.js/PostgreSQL 的资产不同，本 zip **没有单层包装目录**，解压结果直接就是暂存根，不做拍平；同时断言 `python._pth` 不存在，防止把 embeddable 发行版误当 pythoncore 组装。
 - **裁剪 `Doc\`（默认）**：官方 zip 的 `Doc\html` 约 78.7 MB，是解压树里唯一的大单项（占 ~58%），且对 CLI/构建/venv 场景无用；裁剪后暂存树 57.6 MB。需要离线文档时用 `-KeepDoc` 重新构建（安装包会明显变大）。裁剪/保留结果都有断言兜底。
 - 下载缓存于 `build/cache`（按官方资产名命名），重复构建不重复下载；下载失败自动重试 3 次；**缓存命中也会重新校验 SHA-256**，避免复用被改坏的缓存。

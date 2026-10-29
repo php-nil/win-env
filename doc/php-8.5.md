@@ -121,3 +121,19 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - php.ini 扩展处理有四道保险：注释行按需取消注释、`$DisabledExtensions` 强制禁用清单（防止上游把 mysqli/pdo_mysql 改为默认开启）、重复生效行自动注释去重，以及 PECL 扩展（APCu）不走 php.ini-development 注释行、由构建脚本直接追加 `extension=apcu` 与 `[apcu]` 配置块（`apc.enabled=1`、`apc.enable_cli=0`、`apc.shm_size=32M`）。`date.timezone` 同理由构建脚本写入（`Asia/Shanghai`），不依赖 php.ini-development 的注释行。
 - VC++ 运行库走 app-local 而非内置 vc_redist 安装器：保持"暂存目录即安装目录 + 安装器只做原样释放"的契约，安装包仅 +0.26 MiB（内置安装器方案约 +24 MiB 且需安装期执行 MSI）。`vc_redist.x64.exe` 与 cacert.pem 同理每次构建重新下载（aka.ms 始终指向最新 14.x，缓存会钉住旧运行库），版本号从 exe 的 FileVersion 读取记入 `build-info.json`；DLL 集覆盖暂存树全部 vcruntime140/msvcp140 导入，OpenMP/AMP/ConcRT/C++/CX 运行库（vcomp140/vcamp140/concrt140/vccorlib140/vcruntime140_threads）经全树导入扫描确认无人引用，不随包。
 - 新增环境（Nginx、Node.js 等）在 `builders/<name>/` 下平行增加构建脚本，并新建对应 workflow；本文档同级新增 `doc/<name>.md`。
+
+## 7. 经验与坑（PHP 场景专属）
+
+### 7.1 `vc_redist.x64.exe` 是 WiX Burn 包，离线解包用 dark.exe + msiexec /a
+
+- **现象**：构建期想从官方 `vc_redist.x64.exe` 提取 CRT DLL 时连踩三坑——7-Zip 报 `Cannot open the file as archive`；`/layout <dir> /quiet` 退出码 `-2147024891`（0x80070005，拒绝访问）；构建机上也没有 Visual Studio 的 `VC\Redist` 目录可借。
+- **根因**：vc_redist 是 WiX **Burn** 引导包（不是自解压压缩包），7-Zip 不支持该格式；`/layout` 因 exe 清单要求管理员权限，提权后 Burn 引擎固定写 `C:\Windows\Temp\{GUID}`（忽略 TEMP 重定向），受限沙箱 / CI 外部环境下直接失败。
+- **解包链**（全程免提权、不写系统目录，本地沙箱与 runner 行为一致）：WiX 3.14 官方 `wix314-binaries.zip` 中的 `dark.exe -nologo -x <dir> vc_redist.x64.exe` 解出载荷（`AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi` + `cab1.cab`），再 `msiexec /a <msi> /qn TARGETDIR=<dir>` 管理安装提取，DLL 落在 `<dir>\System64\`。核心 7 个 DLL 都在 Minimum 包内（vcruntime140(+_1)、msvcp140(+_1/_2/_atomic_wait/_codecvt_ids)）；concrt / vccorlib / vcamp / vcomp / vcruntime140_threads 经全树导入扫描确认无人引用，不随包。
+- **`msiexec` 是异步进程**：PowerShell 里必须用 `Start-Process -Wait -PassThru` 拿退出码，直调 `&` 可能提前返回。
+
+### 7.2 windows.php.net 的 re-spin 包名带 `-N` 后缀，严格三段版本正则会让版本发现整个落空
+
+- **现象（2026-10 CI 实测，`build-php.yml`）**：`Resolving PHP 8.5 release` 之后直接报 `Could not resolve latest PHP 8.5.x from windows.php.net` 并 exit 1，而 listing 页本身 200、链接正常。
+- **根因**：PHP 8.5.12 的安全重建版在官方目录里叫 `php-8.5.12-1-nts-Win32-vs17-x64.zip`（多一段 `-1` re-spin 后缀），而解析用的 `php-(8\.5\.\d+)-nts-Win32-vs17-x64\.zip$` 只认三段，8.5 目录下的包一个都不匹配 → 集合为空。连带两处：`Test-VersionString` 的 `^\d+\.\d+\.\d+$` 会拒绝手动指定 `8.5.12-1`；`Sort-Object { [version]$_ }` 对 `8.5.12-1` 直接抛"版本字符串格式无效"。
+- **规则**：见 §6 "re-spin 版本原样保留"（正则放宽、排序键 `8.5.12-1` → `[version]'8.5.12.1'`；`VersionInfoVersion` 只收纯数字，本包用 `/DMyAppVersionInfo` 单独传）。通用表述见 [lessons.md](lessons.md) §33。
+- **本机验证（2026-10-29，真实 listing）**：修复前同一段解析逻辑从 17 个 8.5 链接中得到空集合；修复后解析出 `8.5.12-1`、下载并组装成功，`php.exe -v` / Xdebug / APCu / Composer / nilpack 冒烟全过，完整编译出 `php-8.5.12-1-setup-x64.exe`（`FileVersion=8.5.12.1`、`ProductVersion=8.5.12-1`）。

@@ -69,7 +69,10 @@
 
 * README 只放概览、打包清单与快速开始；细节全部归属 `doc/`，禁止两处重复维护。
 * 代码/构建逻辑变更必须同步更新对应 `doc/<name>.md`，并在本文件第五节追加变更记录。
-* 新踩的坑（环境怪癖、工具链退出码、编码/引号问题等）及时补入 [doc/lessons.md](doc/lessons.md)，只记录已实际验证的条目。
+* 新踩的坑（环境怪癖、工具链退出码、编码/引号问题等）只记录**已实际验证**的条目，并按"通用 vs 单场景"分流：
+  * **跨环境通用**（任何打包链路都可能踩：PowerShell 5.1 编码/BOM、CRLF 行尾锚点、`cmd /c` 拼接、原生命令退出码与输出解析、GitHub API 限额、跨盘 rename、上游格式先拉样本验证等）→ 补入 [doc/lessons.md](doc/lessons.md)；
+  * **只在某个环境成立**（如 PHP 的 php.ini/扩展与 re-spin、Python 的 `index-windows.json`、PostgreSQL 的版本发现/管理脚本/头文件布局、Rust 的 channel TOML 与组件命名、OpenCV shim 的导出面/链接依赖、VC 运行库解包细节等）→ 补入对应 `doc/<name>.md` 的"经验 / Rule / 坑"小节，**不写进 lessons.md**；同一坑不必两处重复，通用条目里用一行指针指向场景文档。
+* `doc/lessons.md` 的条目标题编号是**对外引用标识**（AGENTS、workflow 注释、脚本、各环境文档都会写"见 lessons.md §N"）：删除/迁移通用条目前必须全仓库 `grep '§'` 更新引用；**不得随意重编号**，已迁走的编号在 lessons.md 文末"附录 A：已迁移条目索引"保留映射，新条目只能追加到最大编号之后。
 
 ### 3.6 本地验证要求
 
@@ -91,8 +94,9 @@
 | PostgreSQL 打包文档 | [doc/postgres.md](doc/postgres.md) | 产物规格、workflow 参数、安装行为（含管理脚本）、组件来源与裁剪、本地构建、设计约定 |
 | Chromium 打包文档 | [doc/chromium.md](doc/chromium.md) | 产物规格、workflow 参数、安装行为（桌面快捷方式/PATH）、组件来源与镜像用法、本地构建、设计约定 |
 | Python 打包文档 | [doc/python.md](doc/python.md) | 产物规格、workflow 参数、安装行为、组件来源与裁剪（默认裁 `Doc\`）、本地构建、设计约定 |
+| OpenCV shim 构建说明 | [doc/opencv-msvc.md](doc/opencv-msvc.md) | gnu（默认交付）/ msvc（备选）两条路线的技术依据、旗标、验证闸门与已验证的坑 |
 | 体积优化评估 | [doc/compression.md](doc/compression.md) | 安装包压缩参数与内容的实测评估：Inno 侧已到顶、可选杠杆与代价（仅评估，未落地） |
-| 经验教训 | [doc/lessons.md](doc/lessons.md) | Windows / PowerShell / ISCC / Git 已验证的坑与规避规则 |
+| 经验教训（跨环境通用） | [doc/lessons.md](doc/lessons.md) | 只收跨环境通用条目（PowerShell 5.1 / ISCC / 原生命令 / 网络等）；单场景坑见对应环境文档，编号映射见文末"附录 A" |
 
 ## 五、变更记录
 

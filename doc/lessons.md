@@ -1,6 +1,8 @@
-# 经验教训（Windows 打包链路）
+# 经验教训（跨环境通用）
 
-> 只收录在本项目中**实际发生并已验证**的问题。每条结构：现象 → 根因 → 规则。新增条目须是真实踩坑，不收录未经验证的"最佳实践"。
+> 只收录在本项目中**实际发生并已验证**的问题，且仅限**跨环境通用**条目（任何打包链路都可能踩）。每条结构：现象 → 根因 → 规则。新增条目须是真实踩坑，不收录未经验证的"最佳实践"。
+>
+> 绑定单一打包场景的坑不写在这里，而是放在对应 `doc/<name>.md` 的"经验 / Rule / 坑"小节（收录规则见 [AGENTS.md](../AGENTS.md) §3.5）。条目标题编号是**稳定引用标识**——AGENTS、workflow 注释、脚本、各环境文档都会写"见 lessons.md §N"——因此**不得重编号**；已迁走的编号保留在文末"附录 A"做映射。
 
 ## 1. PowerShell 5.1 编码
 
@@ -107,11 +109,11 @@ $text = [Text.Encoding]::UTF8.GetString($b).TrimStart([char]0xFEFF)
 
 ## 4. PowerShell 调用原生命令
 
-### 4.1 给 php.exe 传 `-r` 代码极易被拆词/吞变量
+### 4.1 给原生命令传内联代码载荷极易被拆词/吞变量（以 `php -r` 为例）
 
 * **现象**：`php -r '...$e...'` 接连出现 `unexpected token ")"`、`Unclosed '{'`、`no argument for option r`。
-* **规则**：验证扩展/运行时优先用无空格无引号的参数形式（`php --ri pdo_pgsql`，缺失时退出码非 0 并输出 "Extension not present"）；必须执行代码时写入 `build/` 内临时文件并在用后清理。
-* 调用外部 exe 一律使用**绝对路径**（机器上可能并存多个 PHP，如 Laragon 自带版本），避免误用 PATH 中的其他发行版。
+* **规则**：验证运行时/扩展优先用**无空格、无引号**的探针参数（`php --ri pdo_pgsql`：缺失时退出码非 0 并输出 `Extension not present`；`node -e` / `python -c` 同理，别把多行代码塞进命令行）；必须执行代码时写入 `build/` 内临时文件并在用后清理。
+* 调用外部 exe 一律使用**绝对路径**（机器上可能并存多个同名运行时，如 Laragon 自带的 PHP），避免误用 PATH 中的其他发行版。
 
 ### 4.2 本机验证 PATH 效果必须模拟全新进程
 
@@ -208,8 +210,18 @@ if ($code -ne 0) { throw ... }
 
 * build.ps1 内部逻辑不变——只要 `$env:GITHUB_TOKEN` 非空就加 `Authorization: Bearer` 头。两个 workflow（Git / pnpm）都按此模式处理。
 
+## 9. 官方安装器/引导包不能一律当压缩包解（WiX Burn 例）
 
-* **旁证**：xwin 的 `splat` 会自动串联 download+unpack，无需分步执行；`--disable-symlinks` 对 Windows 暂存树**没有**意义（详见 §14：`symlink()` 在 Windows 上是空操作，但 `symlink_on_windows_too()` 仍会造出目录链接）。
+* **现象**：想从官方 exe 里提取载荷时连踩三坑——7-Zip 报 `Cannot open the file as archive`；`/layout <dir> /quiet` 退出码 `-2147024891`（0x80070005，拒绝访问）；构建机上也未必有该产品安装出的 `Redist` 目录可借。
+* **根因**：这类 exe 是 WiX **Burn** 引导包（不是自解压压缩包），7-Zip 不支持该格式；`/layout` 因 exe 清单要求管理员权限，提权后 Burn 引擎固定写 `C:\Windows\Temp\{GUID}`（忽略 TEMP 重定向），受限沙箱 / CI 外部环境下直接失败。
+* **规则**：先判定它是不是自解压包（`7z l <exe>` 能否当归档读，或看有无 `AttachedContainer\` 目录）；Burn 包走"`dark.exe -x` 解出 MSI → `msiexec /a <msi> /qn TARGETDIR=<dir>` 管理安装提取"的离线链，全程免提权、不写系统目录。`msiexec` 是**异步**进程，PowerShell 里用 `Start-Process -Wait -PassThru` 拿退出码，直调 `&` 可能提前返回。
+* **场景实例**：VC++ 运行库 `vc_redist.x64.exe`（载荷 `AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi`，7 个 CRT DLL 落在 `<dir>\System64\`）的完整命令、DLL 清单与取舍见 [doc/php-8.5.md](php-8.5.md) §7.1；PostgreSQL 复用同一链路（见 [doc/postgres.md](postgres.md) §6）。
+
+## 10. "解压/暂存 → move 到目标"类工具必须同卷
+
+* **现象**：把解压目录放 `%TEMP%`（C 盘）、输出目录指向 D 盘时，工具报 `failed to move ... to \\?\D:\...`，`os error 17`（The system cannot move the file to a different disk drive）。
+* **根因**：这类工具默认把文件从解压目录**移动**到输出目录；Windows 的 rename/move **不支持跨卷**，跨盘时也没有降级为"复制后删除"。
+* **规则**：凡"解压/暂存 → move 到目标"的工具（xwin `splat`、`robocopy /MOV` 等），先确认两侧在同一卷——把临时/缓存目录指到与输出同盘的 `build\cache`（本来就 gitignore，重跑还能复用已下载的包），不要用 `%TEMP%`。xwin 的具体参数（`--cache-dir` vs `--temp`）、`splat` 自动串联 download+unpack、`--disable-symlinks` 在 Windows 上不生效等旁证见 [doc/rust.md](rust.md) §6。
 
 ## 11. `$ErrorActionPreference='Stop'` 下 `2>&1` 捕获 stderr 会误杀成功的原生命令
 
@@ -219,11 +231,28 @@ if ($code -ne 0) { throw ... }
 * **判定诀窍**：报错文本是命令行自身的正常输出、且 `FullyQualifiedErrorId` 为 `NativeCommandError` 时，几乎都是这个坑，而非命令真的失败。
 * **旁证（2026-10）**：`gh release view <tag>` 查不存在的 release 时把 `release not found` 写到 stderr、退出码 1——这是"该版本尚未发布"的**正常分支**，但 EAP=Stop + `2>&1` 会直接打挂步骤（本机复现：`test-release-published.ps1` 首行就抛 `NativeCommandError`）。按本条规则用局部 `EAP=Continue` 的 `Invoke-Gh` 包装、只取退出码与输出文本即可。
 
+## 13. 本地用便携 ISCC 预编译 setup.iss，一次抓完所有只在编译期暴露的错误
 
+* **现象**：`setup.iss` 的错误只在 ISCC 编译期出现，且**串行**——修完一个才看得见下一个：先 `Error on line 176: 'BEGIN' expected`，改完又变成 `lzma: Finish: LZMA_Encode failed with code 5`。
+* **根因（两个已验证的坑）**：
+  1. **Pascal Script 不允许过程内的局部 `const` 块**（`procedure X; const ...; var ...;`）。`const` 只能放 `[Code]` 顶层全局 const 段，过程里只能有 `var`；写成过程内 `const` 会报 `'BEGIN' expected`。
+  2. `LZMADictionarySize` 超过 ISCC 实际可分配的字典上限时，报的是 `LZMA_Encode failed with code 5`，而不是清晰的"参数超范围"。实测本机便携 ISCC：`131072`（128 MB，KB 单位）通过，`163840`（160 MB）及以上全部失败——**可用上限即 128 MB**。
+* **规则**：改 `setup.iss` 后先本地预编译一遍（秒级，见 §5.2 便携 ISCC），造一个**极小的假暂存树**当 `StageDir`，带上 `MyAppVersion` 等 define 直接跑 ISCC，把 Pascal / 压缩类错误一次性抓完，再推 CI。配置模板里含连续单引号的字面量不要手数引号——Rust `config.toml` 的 `Q = ''''` 常量写法见 [doc/rust.md](rust.md) §6。
 
+## 14. 暂存树里的自引用目录链接会让 ISCC 报"无行号"错误
 
+* **现象**：安装器 CI 到 "Compiling installer" 即失败，报 `Error in <...>\setup.iss: The system cannot find the path specified.`（**不带行号**），exit code 2。同一份 setup.iss、同一个 ISCC 6.7，`[Files]` 源树换成"无链接的树"就正常；暂存内容的冒烟测试也已通过，说明内容本身是好的。
+* **根因**：暂存树里的**目录链接成环**（如 `sdk\lib\<ver>` 指向自己的父目录 `sdk\lib`）。Inno Setup 的 `[Files] recursesubdirs` 扫描顺着环回到父目录，路径长度迅速溢出，以 `ERROR_PATH_NOT_FOUND` 中止；此类**扫描期**错误不带行号。常见来源：xwin 在 Windows 上创建 SDK 版本别名链接（细节见 [doc/rust.md](rust.md) §6）。
+* **复现与验证**（本地便携 ISCC 6.7，秒级）：合成暂存树里只在 `sdk\lib`、`sdk\include` 下各放一个指向**父目录**的链接，即稳定复现同一条无行号错误 + exit 2；删掉这两个链接后，同一条 ISCC 命令 exit 0 并正常出包。
+* **错误消息分流表**（无行号 + exit 2 的两类，本机中文 / runner 英文）：
 
+| 源树里的东西 | 消息 | OS 错误码 |
+| --- | --- | --- |
+| 目录链接成环（自引用） | `系统找不到指定的路径` / `The system cannot find the path specified.` | `ERROR_PATH_NOT_FOUND` |
+| 文件软链悬空 | `系统找不到指定的文件` / `The system cannot find the file specified.` | `ERROR_FILE_NOT_FOUND` |
 
+  与之相对，`Source` 目录不存在（`No files found matching`）、`SetupIconFile` 缺失、`MessagesFile` 缺失、Pascal/压缩错误这些**能定位**的问题都会带 `on line N` 或具体值，可据此先分流。悬空**目录**链接（非环）与有效链接 ISCC 都能容忍（exit 0），别只凭"链接"二字下结论。
+* **规则**：暂存树交给 ISCC 前必须**不含任何重解析点**。build.ps1 在组装后、冒烟测试之前枚举 `$StageDir` 下所有带 `ReparsePoint` 属性的条目并删除，随后复查确认为 0。**目录链接必须用 `[IO.Directory]::Delete($p, $false)` 非递归删除**——`Remove-Item -Recurse` 会顺着链接把目标（父目录）里的真实文件一起删掉。
 
 ## 26. CI 内查询 GitHub releases API 必须带 token，否则共享出口 IP 易 403
 
@@ -231,13 +260,11 @@ if ($code -ne 0) { throw ... }
 * **根因**：匿名访问 GitHub API 限额 60 次/小时且**按出口 IP 计**；GitHub 托管 runner 共享出口 IP，配额极易被同池其它 job 耗尽而 403——同一 workflow 里 `resolve` job 因带了 `secrets.GITHUB_TOKEN` 反而不受影响，恰好反证了这一点。
 * **规则**：凡是 CI 内调用 GitHub API 的步骤，都要经 `env:` 注入 `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`；脚本侧按"**存在该变量才**加 `Authorization: Bearer`"实现，保证本地匿名直连行为不变（见 [setup-mingw.ps1](../builders/opencv-shim/setup-mingw.ps1)）。
 
-
 ## 28. PS 5.1 会把原生命令参数里的内嵌双引号剥掉（含空格的载荷还会被切开）
 
 * **现象（2026-10 实测）**：冒烟测试执行 `& $pyExe -c 'import tkinter; print(tkinter.Tcl().eval("info patchlevel"))'`，Python 实际收到的是 `import tkinter; print(tkinter.Tcl().eval(info)` —— 内嵌 `"` 被删除，且 `info patchlevel` 之间的空格把参数**又切成了两段**，测试以 `SyntaxError: invalid syntax. Perhaps you forgot a comma?` 失败（构建脚本本身没问题，是参数在 PS → en-US CRT 命令行这一层被改写）。
 * **根因**：PS 5.1 拼原生命令命令行时不转义参数里的内嵌双引号（该行为到 PS 7 才改善），双引号被解析层吃掉后，剩余文本再按空格分词。
 * **规则**：向 `python -c` / `node -e` / `perl -e` 这类命令传脚本载荷时，载荷内部**只用单引号**，PS 侧用双引号字符串包住它（`-c "print(t.eval('info patchlevel'))"`）；确实需要内嵌双引号或多行时，写临时 `.ps`/`.py` 文件或经 stdin 送入，别把它塞进命令行。
-
 
 ## 30. 按"表头切区段"解析 `objdump -p` 的导出名，在真实 CI 上解析为空——改为整段扫描
 
@@ -277,3 +304,30 @@ if ($names.Count -ne 1 -or $names[0] -ne 'shim_match_template') {
   * 真异常（PATH 里无 `gh`，`CommandNotFoundException`）：仍 `exit=1`——清零没有掩盖真实故障。
 * **落地**：[scripts/test-release-published.ps1](../scripts/test-release-published.ps1) 末尾加注释说明 + `$global:LASTEXITCODE = 0`，9 个 `build-*.yml` 的调用行无需改动；[scripts/publish-alias-release.ps1](../scripts/publish-alias-release.ps1) 含同类"别名 Release 是否存在"探针（当前各路径都以必须成功的 gh 调用/资产闸门收尾，只是**眼下**不触发），按同一规则补上清零与注释。本机用 mock `gh`（分别模拟不存在→create、已存在→upload+edit、资产缺失→throw）复跑该脚本三条路径：`exit=0` / `exit=0` / `exit=1`，与闸门语义一致。
 * **审计结论（2026-10-28，全仓库 15 个 `.ps1` + 所有 workflow `run` 块）**：仅 `test-release-published.ps1` 会踩中——10 个 `builders/*/build.ps1` 对每个非 0 一律 `throw`（`-SkipCompile` 下最后一个原生命令也是"非 0 即 throw"的冒烟测试），`setup-mingw.ps1` 探测 g++ 后即校验退出码，`check-ps1.ps1` / `get-pe-exports.ps1` 不含原生命令；workflow 里的定位/缓存/门禁步骤要么以成功命令收尾，要么显式 `throw`（opencv-shim 两条 dumpbin 闸门还额外断言"闸门确实跑过"）。
+
+## 33. 上游版本串可能带 re-spin / 修订后缀，展示串不能直接用于数值解析
+
+* **现象**：从官方 listing 解析最新版本时，若正则只认严格三段（如 `php-(8\.5\.\d+)-nts-Win32-vs17-x64\.zip$`），上游多发一个 re-spin 包（`php-8.5.12-1-nts-Win32-vs17-x64.zip`）后整个版本发现落空、构建立刻终止，而 listing 页本身 200、链接正常。
+* **根因**：上游会在"基线版本"后追加自己的修订序号（PHP 的 `-N` re-spin、Chromium 的 `-1.1`、Git 的 `.windows.N`）。这类展示串既不能直接丢给 `[version]`（`System.Version` 只认点分数字），也不能直接塞进 Inno 的 `VersionInfoVersion`（只收最多四段纯数字，见 §7）。
+* **规则**：① 版本发现的正则要覆盖上游可能追加的后缀；② 排序键按"基线版本 + 数字后缀"生成（`8.5.12-1` → `[version]'8.5.12.1'`）；③ 用户可见的 tag / 产物名 / 说明保留上游写法，纯数字约束只作用于 `VersionInfoVersion`；④ 下游校验（白名单正则、`[version]` 转换）要同步放宽，否则手填的合法版本会被拒。PHP 的具体实现与实测见 [doc/php-8.5.md](php-8.5.md) §7.2。
+
+## 附录 A：已迁移条目索引
+
+下列条目绑定单一打包场景，正文已迁入对应环境文档（技术细节零丢失），编号保留于此以便既有引用"§N"仍可定位。**不得把这些编号复用给新条目。**
+
+| 原编号 | 主题 | 现位置 |
+| --- | --- | --- |
+| §12 | Rust dist 组件 tarball 内层目录名不一致（rust-std 带 target 后缀） | [doc/rust.md](rust.md) §6（暂存目录与组件合并） |
+| §15 | rustfmt / clippy 组件名带 `-preview`，归档文件名不带 | [doc/rust.md](rust.md) §6（组件名 ≠ 归档文件名） |
+| §16 | Rust channel TOML 的 per-target 组件节是双括号数组表 | [doc/rust.md](rust.md) §6（不硬编码版本） |
+| §17 | postgresql.org `versions.json` 主版本号是裸数字 | [doc/postgres.md](postgres.md) §6（不硬编码版本） |
+| §18 | PostgreSQL Windows 二进制：URL 可构造，下载页不可机器解析 | [doc/postgres.md](postgres.md) §4 / §6 |
+| §19 | `builtin` locale provider 是 PG 17 才有的 | [doc/postgres.md](postgres.md) §3.2 / §6 |
+| §20 | 禁止直接运行 `postgres.exe`（管理员令牌 FATAL） | [doc/postgres.md](postgres.md) §3.1 |
+| §21 | EDB Windows 头文件是扁平 `include\server\...` 布局 | [doc/postgres.md](postgres.md) §6（白名单断言） |
+| §22 | `initdb -D` 要求目标目录"不存在或为空" | [doc/postgres.md](postgres.md) §3.1 |
+| §23 | OpenCV `BUILD_LIST` 剔除 gapi 后 `ade` 仍被导出 | [doc/opencv-msvc.md](opencv-msvc.md) §4 第 2 步 |
+| §24 | OpenCV `cmake --install` 头文件布局随 host 分支而变 | [doc/opencv-msvc.md](opencv-msvc.md) §4 第 3 步 |
+| §25 | 手写 cl 链接静态 OpenCV 必须补齐 zlib / ole32 | [doc/opencv-msvc.md](opencv-msvc.md) §4 第 3 步 |
+| §27 | python.org `index-windows.json` 是对象（条目在 `.versions`） | [doc/python.md](python.md) §6 |
+| §29 | MinGW posix 线程模型下 `-static-libgcc`/`-static-libstdc++` 消不掉 `libwinpthread-1.dll` | [doc/opencv-msvc.md](opencv-msvc.md) §3.1 / §3.2 |

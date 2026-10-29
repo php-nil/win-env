@@ -67,9 +67,9 @@
 要点：
 
 - 路径全部基于 `%~dp0` 自定位（不依赖调用方工作目录），符合仓库 `.bat` 包装器约定。
-- **只用 `pg_ctl.exe` / `initdb.exe`，绝不直接运行 `postgres.exe`**：PostgreSQL 源码 `check_root()` 在 WIN32 分支判定"令牌含 Administrators 或 PowerUsers 即管理员"并直接 FATAL；`pg_ctl` / `initdb` 会以**受限令牌**重新执行 postmaster，因此**管理员/提权终端下也能正常工作**（CI runner 同理）。
+- **只用 `pg_ctl.exe` / `initdb.exe`，绝不直接运行 `postgres.exe`**：PostgreSQL 源码 `src/backend/main/main.c` 的 `check_root()` 直接 FATAL 退出（`Execution of PostgreSQL by a user with administrative permissions is not permitted`），它调 `src/port/win32security.c` 的 `pgwin32_is_admin()`：令牌含 Administrators **或 PowerUsers** 即判为管理员。`pg_ctl` / `initdb` 会以**受限令牌**重新执行 postmaster，因此**管理员/提权终端下也能正常工作**（CI runner 的管理员令牌同理；副作用是 `%APPDATA%` 等路径按安装用户解析），无需 `schtasks /ru` 委派这类绕行方案。
 - 首次启动的口令通过临时 `--pwfile`（`%TEMP%\pg-start-win-env.pw.tmp`）传给 `initdb`，成功后立即删除，不写入任何配置文件；默认 `postgres`，可用 `--password` 覆盖（批处理限制：口令请勿含 `& | < >` 等 shell 特殊字符）。
-- **`initdb` 要求 `-D` 目标目录"不存在或为空"**，因此 `pg-start` 在初始化前只创建空的 `data\`（口令临时文件放 `%TEMP%`，`data\logs\` 等一切内容都在 `initdb` 成功之后才创建）——详见 [lessons.md](lessons.md) §22。
+- **`initdb` 要求 `-D` 目标目录"不存在或为空"**：目录已存在但不为空时直接报 `initdb: 错误: 目录 "…\data" 已存在，但不为空`（exit 1）；受控实验确认**空目录 exit 0、含任意 1 个文件的目录 exit 1**。因此 `pg-start` 在初始化前只创建空的 `data\`（口令临时文件放 `%TEMP%`），`data\logs\` 等一切运行期文件都在 `initdb` 成功之后才创建。早期版本先 `mkdir data\logs` 并把口令文件写进 `data\`，导致首次 `pg-start` 卡死；构建期冒烟用独立 scratch 目录、直接调 `initdb.exe`，没走管理脚本这段逻辑，故只有真机安装后跑 `pg-start` 才暴露——**管理脚本自身的逻辑必须在安装后的真实路径上验证**，不能只靠组装期冒烟。
 - 脚本按 UTF-8（无 BOM）+ `chcp 65001` 写入，中文提示在任意系统区域设置下都能正确显示（写入用 `[IO.File]::WriteAllText`，不用 `Out-File -Encoding utf8`）。
 
 ### 3.2 默认集群参数
@@ -82,7 +82,7 @@ initdb -D <app>\data -U postgres -E UTF8
         -c timezone=Asia/Shanghai -c log_timezone=Asia/Shanghai
 ```
 
-- `builtin` + `C.UTF-8`：**避免中文 Windows 上 libc 默认 locale 派生出 GBK/CP936 类编码与不稳定排序**，UTF8 存储 + 确定性排序，跨机器 dump/restore 可复现。需要拼音排序时按库使用包内自带 ICU（`CREATE DATABASE ... LOCALE_PROVIDER icu ICU_LOCALE 'zh-CN'`）。
+- `builtin` + `C.UTF-8`：**避免中文 Windows 上 libc 默认 locale 派生出 GBK/CP936 类编码与不稳定排序**，UTF8 存储 + 确定性排序，跨机器 dump/restore 可复现。需要拼音排序时按库使用包内自带 ICU（`CREATE DATABASE ... LOCALE_PROVIDER icu ICU_LOCALE 'zh-CN'`）。官方 PG 16 文档只列 `libc` / `icu` 两个 provider 且**没有** `--builtin-locale`——`builtin` provider 与 `--builtin-locale` 参数是 **PG 17 引入**的，这一点也是主版本下限取 17 的依据（见 §6）。
 - 超级用户 `postgres`、默认口令 `postgres`（scram-sha-256），仅监听回环地址 → 与仓库内其它包开箱互通（PHP 包默认启用 `pdo_pgsql`）：`postgres://postgres:postgres@127.0.0.1:5432/postgres`。
 - `timezone` / `log_timezone` 对齐仓库既有约定（PHP 包 `date.timezone=Asia/Shanghai`）。
 - 端口 5432 被占用时用 `pg-start --port 5433`；取值的持久化位置是 `data\win-env.env`。
@@ -143,14 +143,14 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 ## 6. 设计约定
 
-- **不硬编码补丁版本号**：运行时从官方 `versions.json` 解析 supported 的最高主版本与 latestMinor；解析为空立即终止报错，不猜测 URL。
-- **EDB 与 versions.json 的时差**：`versions.json` 由 PostgreSQL 项目维护，EDB 二进制略有滞后。发现流程为：该 minor 按 `rev` 1→3 做 HEAD 探测（EDB 用 rev 表示同版本的重新构建）；该 minor 全部 404 时 **minor 递减**重试（最多 3 个 minor），全部失败即 `throw`，绝不猜 URL。
+- **不硬编码补丁版本号**：运行时从官方 `versions.json` 解析 supported 的最高主版本与 latestMinor；解析为空立即终止报错，不猜测 URL。该文件的 `major` 在 10 及以上是**裸主版本号**（`"14"`、`"18"`），10 以下才是点分形式（`"6.3"`、`"7.4"`），`latestMinor` 同样可能是裸 minor（`"6"`）——直接 `[version]$_.major` 会抛 `Cannot convert value "14" to type "System.Version"`（`System.Version` 至少要求 `major.minor` 两段）。`build.ps1` 用 `ConvertTo-MajorVersion` 补齐第二段（不足两段补 `.0`）后再 `[version]`；凡"裸数字主版本号"都按此处理。
+- **EDB 与 versions.json 的时差**：`versions.json` 由 PostgreSQL 项目维护，EDB 二进制略有滞后。发现流程为：该 minor 按 `rev` 1→3 做 HEAD 探测（EDB 用 rev 表示同版本的重新构建）；该 minor 全部 404 时 **minor 递减**重试（最多 3 个 minor），全部失败即 `throw`，绝不猜 URL。URL 形态稳定可构造，实测 14.24-1 / 15.19-1 / 16.15-1 / 17.11-1 / 18.6-1 全部 200、约 344 MB；官方 zip 顶层唯一 `pgsql\` 根目录（21,968 条目，raw 913.6 MB / 压缩 339.0 MB），其中 `pgAdmin 4\` 一项就占压缩体积 274.5 MB（约 81%）。EDB 的下载页（`enterprisedb.com/download-postgresql-binaries` 及 `/downloads/...`）只有 `getfile.jsp?fileid=…` 不透明链接、没有可解析直链，因此只作人工下载入口，绝不作为发现入口。
 - **主版本下限 17**：确定性 UTF-8 排序依赖 PG 17 引入的 `builtin` locale provider（PG 16 及更早只有 libc/icu）。低于 17 时在下载前即报错终止，避免产出"行为随宿主 locale 变化"的包；组装期还会用 `initdb --help` 复核 `--builtin-locale` 确实存在。
 - 暂存目录（`build/stage/postgres`）根目录即安装后的 `C:\pf\postgres-<major>`，安装器只负责原样释放与 PATH 改写。官方 zip 内含单层 `pgsql\` 根目录，构建时拍平。
 - 下载缓存于 `build/cache`（按官方资产名命名，340 MB 的 zip 不会重复下载）；`vc_redist.x64.exe` 例外，每次重取（aka.ms 始终指向最新 14.x，缓存会静默钉住旧运行库）。
-- 组装完成后对真实解压树做**白名单断言**：关键文件（`bin\{postgres,initdb,pg_ctl,psql,pg_dump,pg_restore,pg_isready,pg_config,createdb}.exe`、`bin\libpq.dll`、`share\{postgresql.conf.sample,pg_hba.conf.sample}`、`share\timezone\Asia\Shanghai`、`include\server\postgres.h`）缺一即失败，避免上游布局变化导致"删多了"；ICU 库名带 ICU 主版本号（PG 18 为 `icuuc77`）故按 `icuuc*` / `icudt*` / `icuin*` 通配断言。
+- 组装完成后对真实解压树做**白名单断言**：关键文件（`bin\{postgres,initdb,pg_ctl,psql,pg_dump,pg_restore,pg_isready,pg_config,createdb}.exe`、`bin\libpq.dll`、`share\{postgresql.conf.sample,pg_hba.conf.sample}`、`share\timezone\Asia\Shanghai`、`include\server\postgres.h`）缺一即失败，避免上游布局变化导致"删多了"；ICU 库名带 ICU 主版本号（PG 18 为 `icuuc77`）故按 `icuuc*` / `icudt*` / `icuin*` 通配断言。EDB 的头文件是**扁平布局**：真实解压树为 `include\server\postgres.h`、`include\internal\`、`include\libpq\`，`include\` 下**没有** `postgresql\` 这一层（`pg_config --includedir-server` 也指向扁平目录）；Unix `make install` 才是 `$INCLUDEDIR/postgresql/...`。断言路径一律以真实解压树为准，哨兵文件用 `include\server\postgres.h`（照搬 Unix 布局会得到 `Required file missing after trimming`）。
 - 暂存树交给 ISCC 前断言**不含重解析点**（链接会让 `[Files]` 扫描绕环，报无行号的"系统找不到指定的路径"，见 [doc/lessons.md](lessons.md) §14）。
 - app-local 运行库：EDB zip 内没有 CRT DLL，构建期从官方 `vc_redist.x64.exe`（WiX `dark.exe` 解 Burn 包 + `msiexec /a` 解 MSI）提取 7 个 DLL 释放到 `bin\`，并断言版本为 `14.x`。构建机预装运行库会掩盖缺库问题，因此**必须靠文件存在性 + 版本断言**兜底。
 - 冒烟测试（强制门槛，失败即 `throw`，不产出坏包）：在 `build/cache/pgsmoke` 上用**非默认端口 55432** 跑完整闭环 `initdb` → `pg_ctl start -w` → `psql -U postgres -tAc "select version()"`（输出须含 `PostgreSQL <version>`）→ `pg_isready` → `pg_ctl stop -m fast -w`，并在 `finally` 中无条件回收（残留 postmaster 会锁住数据目录，导致后续构建清理失败）。
 - 管理脚本生成后立即做**编码断言**：不得带 BOM，且按 UTF-8 解码后必须能读回中文横幅（防止写出乱码脚本）。
-- 安装闭环验证（每次改动安装器必做，见 [AGENTS.md](../AGENTS.md) §3.6）：静默安装到**非默认目录** → 用注册表 Machine+User PATH 拼出新进程环境，以裸命令验证 `psql` / `pg-start` / `pg-stop` / `pg-status` 与 `select version()` → 静默卸载 → 确认文件与 PATH 条目都消失、`data\` 保留。本次交付**未在本机复跑该闭环**（属破坏性操作、本机未获授权），需由 CI 或人工验收；`initdb` 空目录这类只在安装后路径才暴露的坑见 [lessons.md](lessons.md) §22。
+- 安装闭环验证（每次改动安装器必做，见 [AGENTS.md](../AGENTS.md) §3.6）：静默安装到**非默认目录** → 用注册表 Machine+User PATH 拼出新进程环境，以裸命令验证 `psql` / `pg-start` / `pg-stop` / `pg-status` 与 `select version()` → 静默卸载 → 确认文件与 PATH 条目都消失、`data\` 保留。本次交付**未在本机复跑该闭环**（属破坏性操作、本机未获授权），需由 CI 或人工验收；`initdb` 空目录这类只在安装后路径才暴露的坑见 §3.1 要点第 4 条。

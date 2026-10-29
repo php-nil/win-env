@@ -56,7 +56,11 @@ OpenCV 的 pthreads 并行框架 `WITH_PTHREADS_PF` **默认 ON 且在 MinGW 上
 [CMakeLists.txt](../builders/opencv-shim/CMakeLists.txt) 因此改用 `-static`
 （**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）。OS CRT
 （msvcrt / ucrtbase）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，
-`KERNEL32.dll` 同理——这正是闸门允许的范围。
+`KERNEL32.dll` 同理——这正是闸门允许的范围。CI 实测（2026-10）闸门输出：
+`imports: api-ms-win-crt-*.dll…, KERNEL32.dll, libwinpthread-1.dll, ole32.dll`，逐行报
+`unexpected imports: libwinpthread-1.dll, ole32.dll (shim must stay self-contained)` 并 exit 1；
+把白名单收敛为 `KERNEL32.dll` + `ole32.dll` + OS CRT（`msvcrt.dll` / `ucrtbase.dll` +
+`api-ms-win-crt-*.dll`）后即通过（口径依据见 §3.2：`ole32.dll` 是 OS 组件，判它"破坏自包含"是误报）。
 
 ### 3.2 CRT/UCRT 全静态，零运行时依赖
 
@@ -127,8 +131,9 @@ key 因编译/链接旗标变更升至 `-v4`（见
    `modules/gapi/cmake/init.cmake` 在 configure 期仍会创建 `ade` 目标，并由
    `ocv_install_target(... EXPORT OpenCVModules ...)` 写进安装出的
    `OpenCVModules.cmake`——而 `libade.a`（gnu）/ `ade.lib`（msvc）从不构建。
-   gnu 路线用 `find_package` 消费该 config，会因 "the imported target ade
-   references … libade.a but this file does not exist" 直接 configure 失败；
+   gnu 路线用 `find_package` 消费该 config，会因
+   `The imported target "ade" references the file "…/x64/mingw/staticlib/libade.a" but this file does not exist`
+   （栈 `OpenCVConfig.cmake` → `OpenCVModules.cmake`，OpenCV 4.14.0 实测）直接 configure 失败；
    `WITH_ADE=OFF` 在 `init.cmake` 的 `if(NOT WITH_ADE) return()` 处短路，目标彻底
    消失，对已剔除的 gapi 无任何影响。msvc 路线不走 `find_package`（cl 直编），本不受
    影响，加同一旗标仅为让两条路线的旗标集保持一致。
@@ -143,7 +148,9 @@ key 因编译/链接旗标变更升至 `-v4`（见
    lib 目录与文件名的版本后缀（`opencv_core4100.lib` → `...4110.lib` …）均由 job 内
    glob 递归检索 `opencv_core*.lib` 后取得，不写死路径也不硬编码。
    **静态 core/imgproc 的传递依赖必须显式链接**（`find_package` 会自动带上，手写 cl 不会），
-   漏掉即报 LNK2019/LNK1120 unresolved external：
+   漏掉即报 LNK2019/LNK1120 unresolved external（实测 `LNK2019: unresolved external symbol __imp_CoCreateGuid`
+   （`cv::tempfile`）与 `gzputs`/`gzgets`/`gzrewind`/`gzeof`/`gzclose`/`gzopen`（`cv::FileStorage`），
+   合计 `LNK1120: 7 unresolved externals`）：
    * `zlib.lib` —— `cv::FileStorage` 的 `gz*`（`gzopen`/`gzclose`/`gzgets`/`gzputs`/`gzrewind`/`gzeof`）。
      OpenCV 把内置 zlib 静态库装到**与模块库同一目录**（`OPENCV_3P_LIB_INSTALL_PATH`
      = `<prefix>/x64/<rt>/staticlib`），因此与 `opencv_core*.lib` 同目录、共用同一个 `LIBPATH`；
@@ -156,7 +163,9 @@ key 因编译/链接旗标变更升至 `-v4`（见
    头文件直接落在 `<install>\include\opencv2\...`（**没有** `opencv4` 中间层，那是
    UNIX 分支才有的）；UNIX host 才是 `<install>\include\opencv4\opencv2\...`。job 内
    由递归检索到的 `opencv_modules.hpp`（必在 `opencv2\` 内）取其上一级目录作为
-   include 根，两种布局通吃，不再假设单一布局。
+   include 根，两种布局通吃，不再假设单一布局（早期按目录名检索 `opencv4` 落空，
+   构建在 `opencv4 include dir not found under msvc-install\include` 处终止；
+   检索为空必须显式 `throw`，不得退化成"猜一个路径"）。
 4. 产物落 `out-msvc\opencv_shim.dll`，作为 `opencv_shim-msvc` artifact 上传。
 5. 验证闸门（job 内强制，全过才允许上传）：
 
@@ -175,7 +184,7 @@ key 因编译/链接旗标变更升至 `-v4`（见
    gnu 路线对应闸门（`objdump -p`）是**白名单式**：只放行 OS DLL——`KERNEL32.dll`、
    `ole32.dll` 与工具链自身的 CRT（`msvcrt.dll`，或 ucrt 的 `ucrtbase.dll` +
    `api-ms-win-crt-*.dll`），任何 C++（`libstdc++-6.dll`/`libgcc_s_seh-1.dll`/
-   `libwinpthread-1.dll`）或 OpenCV 依赖即判失败（见 [lessons.md](lessons.md) §29）。
+   `libwinpthread-1.dll`）或 OpenCV 依赖即判失败（口径与成因见 §3.1 / §3.2）。
    msvc 闸门是**黑名单式**（`VCRUNTIME|MSVCP|CONCRT|ucrtbase|opencv_`），
    `ole32.dll` 本就不在其内、无需改动。
 
