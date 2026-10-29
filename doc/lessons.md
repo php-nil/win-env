@@ -208,18 +208,7 @@ if ($code -ne 0) { throw ... }
 
 * build.ps1 内部逻辑不变——只要 `$env:GITHUB_TOKEN` 非空就加 `Authorization: Bearer` 头。两个 workflow（Git / pnpm）都按此模式处理。
 
-## 9. vc_redist.x64.exe 是 WiX Burn 包，解包用 dark.exe + msiexec /a
 
-* **现象**：构建期想从官方 `vc_redist.x64.exe` 提取 CRT DLL 时连踩三坑——7-Zip 报 `Cannot open the file as archive`；`/layout <dir> /quiet` 退出码 `-2147024891`（0x80070005，拒绝访问）；本机也没有 Visual Studio 的 `VC\Redist` 目录可借。
-* **根因**：vc_redist 是 WiX **Burn** 引导包（不是自解压压缩包），7-Zip 不支持该格式；`/layout` 因 exe 清单要求管理员权限，提权后 Burn 引擎固定写 `C:\Windows\Temp\{GUID}`（忽略 TEMP 重定向），受限沙箱/CI 外部环境下直接失败。
-* **规则**：离线解包链——WiX 3.14 官方 `wix314-binaries.zip` 中的 `dark.exe -nologo -x <dir> vc_redist.x64.exe` 解出载荷（`AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi` + cab1.cab），再 `msiexec /a <msi> /qn TARGETDIR=<dir>` 管理安装提取，DLL 落在 `<dir>\System64\`。全程无需提权、不写系统目录，本地沙箱与 GitHub runner 行为一致。核心 CRT 7 DLL 均在 Minimum 包内（vcruntime140(+_1)、msvcp140(+_1/_2/_atomic_wait/_codecvt_ids)），concrt/vccorlib/vcamp/vcomp/vcruntime140_threads 按需另行评估。
-* **别忘**：`msiexec` 是异步进程，PowerShell 里用 `Start-Process -Wait -PassThru` 拿退出码，直调 `&` 可能提前返回。
-
-## 10. xwin splat 是 move（rename）语义，cache/unpack/output 必须同盘
-
-* **现象**：CI 上 `xwin --temp splat --output D:\...\stage\rust\sdk` 报 `failed to move ...\unpack\... to \\?\D:\...`，`os error 17`（The system cannot move the file to a different disk drive）。
-* **根因**：splat 默认把文件从解压目录**移动**到输出目录；`--temp` 固定把解压目录放 `%TEMP%`（runner 上是 C 盘），与 D 盘的 output 跨盘，Windows rename 不支持跨盘。
-* **规则**：用 `--cache-dir <build>\cache\xwin` 而不是 `--temp`——cache、unpack、output 同盘时 move 是零成本 rename；`build\cache` 本来就 gitignore，不污染 repo，重跑还能复用已下载的包。凡"解压/暂存 → move 到目标"类工具（xwin、robocopy /MOV 等）都要先确认两侧在同一卷。
 * **旁证**：xwin 的 `splat` 会自动串联 download+unpack，无需分步执行；`--disable-symlinks` 对 Windows 暂存树**没有**意义（详见 §14：`symlink()` 在 Windows 上是空操作，但 `symlink_on_windows_too()` 仍会造出目录链接）。
 
 ## 11. `$ErrorActionPreference='Stop'` 下 `2>&1` 捕获 stderr 会误杀成功的原生命令
@@ -230,108 +219,11 @@ if ($code -ne 0) { throw ... }
 * **判定诀窍**：报错文本是命令行自身的正常输出、且 `FullyQualifiedErrorId` 为 `NativeCommandError` 时，几乎都是这个坑，而非命令真的失败。
 * **旁证（2026-10）**：`gh release view <tag>` 查不存在的 release 时把 `release not found` 写到 stderr、退出码 1——这是"该版本尚未发布"的**正常分支**，但 EAP=Stop + `2>&1` 会直接打挂步骤（本机复现：`test-release-published.ps1` 首行就抛 `NativeCommandError`）。按本条规则用局部 `EAP=Continue` 的 `Invoke-Gh` 包装、只取退出码与输出文本即可。
 
-## 12. Rust dist 组件 tarball 内层目录名不一致（rust-std 带 target 后缀）
 
-* **现象**：`cargo build` 报 `error[E0463]: can't find crate for 'std'` 并提示 `rustup target add x86_64-pc-windows-msvc`，但 rust-std 组件其实已下载并合并进暂存树。
-* **根因**：`rustc-<ver>-<host>.tar.gz` 的内层载荷目录名等于组件名（`rustc/`、`cargo/`），但 `rust-std-<ver>-<host>.tar.gz` 的内层目录是 **target 后缀名** `rust-std-<target>/`。按 `Join-Path <versionDir> 'rust-std'` 取会落空；一旦 fallback 成"整个版本目录"，载荷就被多套一层，std 落到 `<stage>\rust-std-<target>\lib\rustlib\<target>\lib`。而 rustc 的 sysroot 是 `bin\` 的父目录，期望在 `<stage>\lib\rustlib\<target>\lib`，于是找不到 std。
-* **规则**：解 Rust dist 组件 tar 包后，载荷目录一律按"版本目录下唯一的子目录"通用取（优先匹配 `组件名` 或 `组件名-*`），不要假设内层目录名恒等于组件名。合并后立即断言 `lib\rustlib\<target>\lib` 存在，把 E0463 提前成明确报错。
 
-## 13. 本地用便携 ISCC 预编译 setup.iss，一次抓完所有只在编译期暴露的错误
 
-* **现象**：Rust 安装器 `setup.iss` 的错误只在 ISCC 编译期出现，且**串行**——修完一个才看得见下一个：先 `Error on line 176: 'BEGIN' expected`，改完又变成 `lzma: Finish: LZMA_Encode failed with code 5`。
-* **根因（两个已验证的坑）**：
-  1. **Pascal Script 不允许过程内的局部 `const` 块**（`procedure X; const ...; var ...;`）。`const` 只能放 `[Code]` 顶层全局 const 段，过程里只能有 `var`。把 `const` 写在过程里会报 `'BEGIN' expected`。
-  2. `LZMADictionarySize` 超过 ISCC 实际可分配的字典上限时，报的是 `LZMA_Encode failed with code 5`，而不是清晰的"参数超范围"。实测本机便携 ISCC：`131072`（128 MB）通过，`163840`（160 MB）及以上全部失败——**可用上限即 128 MB**（与 PHP 包取值一致）。Rust 原本写的 `262144`（256 MB）必然编译失败。
-* **规则**：改 `setup.iss` 后先本地预编译一遍（秒级，见 §5.2 便携 ISCC），造一个**极小的假暂存树**当 `StageDir`，带上 `MyAppVersion` 等 define 直接跑 ISCC，把 Pascal / 压缩类错误一次性抓完，再推 CI。另：TOML/配置里含连续单引号的字面量不要手数引号，定义全局常量 `Q = ''''`（一个单引号字符）再拼接，可证明引号平衡。
 
-## 14. 暂存树里的自引用目录链接会让 ISCC 报"无行号"错误（Windows 上 xwin 必产）
 
-* **现象**：Rust 安装器 CI 到 "Compiling installer" 即失败，报
-  `Error in D:\a\win-env\win-env\builders\rust\setup.iss: The system cannot find the path specified.`（**不带行号**），exit code 2。同一份 setup.iss、同一个 ISCC 6.7，`[Files]` 源树换成 node 那种无链接的树就正常；`cargo build` 冒烟测试也已通过，说明暂存内容本身是好的。
-* **根因**：xwin `splat` 在 Windows 上把 `symlink()` 实现为空操作（`#[cfg(windows)] fn symlink -> Ok(())`），但 `symlink_on_windows_too()` **不是**空操作——处理 SdkLibs / SdkHeaders 时它会创建 `sdk\lib\<sdkversion>` 与 `sdk\include\<sdkversion>` 两个**目录链接**，目标硬编码为 `"."`，即链接指向自己的**父目录**，构成环（`sdk\lib\10.0.26100.0` → `sdk\lib`）。这两个链接在 `if config.enable_symlinks` 之外，**`--disable-symlinks` 挡不住**。Inno Setup 的 `[Files] recursesubdirs` 扫描顺着环回到父目录，路径长度迅速溢出，以 `ERROR_PATH_NOT_FOUND` 中止；此类**扫描期**错误不带行号。
-* **复现与验证**（本地便携 ISCC 6.7，秒级）：合成暂存树里只在 `sdk\lib`、`sdk\include` 下各放一个指向**父目录**的链接，即稳定复现同一条无行号 `Error in <setup.iss>: 系统找不到指定的路径。` + exit 2；删掉这两个链接后，同一条 ISCC 命令 exit 0 并正常出包（真实 SDK 目录内容未受影响）。
-* **错误消息分流表**（无行号 + exit 2 的三类，本机中文 / runner 英文）：
-
-| 源树里的东西 | 消息 | OS 错误码 |
-| --- | --- | --- |
-| 目录链接成环（自引用） | `系统找不到指定的路径` / `The system cannot find the path specified.` | `ERROR_PATH_NOT_FOUND` |
-| 文件软链悬空 | `系统找不到指定的文件` / `The system cannot find the file specified.` | `ERROR_FILE_NOT_FOUND` |
-
-  与之相对，`Source` 目录不存在（`No files found matching`）、`SetupIconFile` 缺失、`MessagesFile` 缺失、Pascal/压缩错误这些**能定位**的问题都会带 `on line N` 或具体值，可据此先分流。悬空**目录**链接（非环）与有效链接 ISCC 都能容忍（exit 0），别只凭"链接"二字下结论。
-* **规则**：暂存树交给 ISCC 前必须**不含任何重解析点**。build.ps1 在 xwin splat 之后、冒烟测试之前清理：枚举 `$StageDir` 下所有带 `ReparsePoint` 属性的条目并删除，随后复查确认为 0。**目录链接必须用 `[IO.Directory]::Delete($p, $false)` 非递归删除**——用 `Remove-Item -Recurse` 会顺着链接把目标（父目录）里的真实文件一起删掉。setup.iss 只用不带版本号的 `sdk\lib\...` 路径，这些版本别名对本包无用，删除无副作用。
-
-## 15. rustfmt / clippy 的组件名带 `-preview`，归档文件名不带
-
-* **现象**：给 Rust 包补 rustfmt / clippy 时，按 `pkg.rustfmt` / `pkg.clippy` 去 channel TOML 里找组件节，**两个都搜不到**（全文无匹配）；若按"组件名"拼下载 URL（例如 pinned 版本重建 `rustfmt-preview-<ver>-<target>.tar.gz`），下载必然 404。
-* **事实（拉真实样本实测：2026-10-15 的 `channel-rust-stable.toml` + 两个组件归档 `tar -tzf` / `manifest.in`）**：
-  * channel 里的组件节名是 `[pkg.rustfmt-preview.target.x86_64-pc-windows-msvc]`、`[pkg.clippy-preview.target.x86_64-pc-windows-msvc]`，**带 `-preview`**；
-  * 同一节 `url` 值指向的文件名却是 `rustfmt-1.99.1-x86_64-pc-windows-msvc.tar.gz`、`clippy-1.99.1-x86_64-pc-windows-msvc.tar.gz`，**不带 `-preview`**；
-  * 归档内层：版本目录 → 组件目录（名字 **= 组件名**，即 `rustfmt-preview/`、`clippy-preview/`）→ `bin\rustfmt.exe`、`bin\cargo-fmt.exe` / `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者的 `manifest.in` 都同时列出 `*.pdb`，说明**全量拷贝组件目录 = 官方安装内容**（官方也装这些 PDB）。
-* **规则**：组件表把"**解析键 / 内层合并目录名**（带 `-preview`）"与"**归档文件名前缀**（不带 `-preview`）"分成两个字段分别存放（本仓库为 `Name` 与 `FileStem`），重建 URL 只用后者，否则 404 或合并目录取空（fallback 会多套一层）。rustfmt / clippy 的全部可执行文件都落在 `bin\`（`cargo fmt` / `cargo clippy` 靠 PATH 找 `cargo-fmt.exe` / `cargo-clippy.exe`），因此必须与 `cargo.exe` 同处 `bin\`——即加入系统 PATH 的那个目录。按此规则补组件后，`[Files]` 源树自然包含它们，安装器无需额外改动。
-
-## 16. Rust channel TOML 的 per-target 组件节是双括号数组表，单括号匹配会漏解析
-
-* **现象**：解析 `channel-rust-stable.toml` 取各组件（`rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview`）的 per-target 下载 URL 时，若按 `[pkg.<name>.target.<target>]` 单括号节名匹配，**一个 URL 都取不到**，脚本随即以"解析为空"终止。
-* **根因**：PS 5.1 无内置 TOML 解析器，需自行按行扫描；而官方 channel TOML 里 per-target 组件节用的是 **`[[...]]` 双括号数组表**语法（如 `[[pkg.rustc.target.x86_64-pc-windows-msvc]]`），顶层 `date`、`[pkg.rust]` 等才是单括号表。只认单括号就会与双括号节名擦肩而过，解析结果为空。
-* **规则**：按行跟踪"当前节"，节名匹配用 `^\[+(.+?)\]+$` 一次性吃掉 `[` 与 `[[`（剥掉全部方括号得到节路径），再据路径取字段。取组件名要用**节路径**而非 `$Matches[0]`——后续行内的 `url = "..."` 正则会把 `$Matches` 覆盖成 URL 行。实现见 `builders/rust/build.ps1` 第 1 节的解析循环。
-
-## 17. postgresql.org versions.json 的主版本号是裸数字，`[version]` 直接转换会抛错
-
-* **现象**：PostgreSQL 包按"最高 supported 主版本"选版本时，`Sort-Object { [version]$_.major }` 抛 `Cannot convert value "14" to type "System.Version". Error: "Version string portion was too short or too long."`，构建立刻在发现阶段终止。
-* **根因**：`versions.json` 的 `major` 在 10 及以上是**裸主版本号**（`"14"`、`"18"`），10 以下才是点分形式（`"6.3"`、`"7.4"`）；而 `System.Version` 要求至少 `major.minor` 两段。`latestMinor` 同样是裸 minor（`"6"`），完整版本号必须自行拼成 `<major>.<latestMinor>`。
-* **规则**：解析上游版本字段前先拉真实样本核对形态（见 §16 同类教训）。本仓库 `builders/postgres/build.ps1` 用 `ConvertTo-MajorVersion` 补齐第二段（不足两段补 `'0'`）后再 `[version]`；凡"裸数字主版本号"都按此处理，不要直接丢给 `[version]`。
-
-## 18. PostgreSQL Windows 二进制：URL 可构造，下载页不可机器解析
-
-* **事实（2026-10 实测，含 HTTP Range + .NET `ZipArchive` 读远端中央目录）**：
-  * `https://get.enterprisedb.com/postgresql/postgresql-<ver>-<rev>-windows-x64-binaries.zip` **可直接构造**：14.24-1 / 15.19-1 / 16.15-1 / 17.11-1 / 18.6-1 全部 `200`，344 MB 量级；`<rev>` 是 EDB 对同一版本的重新构建序号，从 1 起向上探测。
-  * 版本发现走官方 <https://www.postgresql.org/versions.json>（`supported` / `current` / `latestMinor`，机器可读）。EDB 的下载页（`enterprisedb.com/download-postgresql-binaries`、`/downloads/...`）**没有可解析的直链**，只有 `getfile.jsp?fileid=…` 不透明链接 → 不能作为发现入口。
-  * 官方 zip 顶层唯一根目录 `pgsql/`（21,968 条目，raw 913.6 MB / 压缩 339.0 MB）；`pgAdmin 4/` 一项就占压缩体积 **274.5 MB（整包的 ~81%）**，是本仓库裁剪的最大单项。
-  * **zip 内不含任何 CRT DLL**（`vcruntime140.dll` / `msvcp140.dll` 全 missing）→ 必须 app-local 注入，复用 [doc/php-8.5.md](php-8.5.md) 已验证的 vc_redist 提取链路。
-* **规则**：`versions.json`（PostgreSQL 项目维护）领先 EDB 发布（Windows 二进制滞后）——某 minor 的 rev 1..3 全 404 时按 **minor 递减**重试，全部失败即 `throw`，绝不猜 URL。裁剪后必须对真实解压树做白名单断言（删多了比删少了更隐蔽）。
-
-## 19. `--locale-provider` / builtin 是 PG 17 才有的，决定 initdb 默认参数
-
-* **事实**：官方 PG 16 initdb 文档只列 `libc` / `icu` 两个 locale provider，且**没有** `--builtin-locale`；`builtin` provider 与 `--builtin-locale` 是 **PG 17 引入**。PG 16 及更早，locale 由 libc 派生编码（中文 Windows 上会派生出 GBK 类编码与不稳定排序，导致跨机器 dump/restore 不可复现）。
-* **规则**：需要"UTF8 + 与宿主 locale 无关的确定性排序"的集群默认值时，版本下限必须定在 **PG 17**；`build.ps1` 在**下载前**按主版本号下限报错终止（不浪费 340 MB 下载），组装后再用 `initdb --help` 复核 `--builtin-locale` 确实存在，避免产出"行为随宿主 locale 变化"的包。
-
-## 20. 禁止直接运行 `postgres.exe`，但 `pg_ctl` / `initdb` 在管理员终端下可用
-
-* **现象（源码核实）**：`src/backend/main/main.c` 的 `check_root()` 在 WIN32 分支调用 `pgwin32_is_admin()`（`src/port/win32security.c`：令牌含 Administrators **或 PowerUsers** 即判为管理员）并直接 FATAL：`Execution of PostgreSQL by a user with administrative permissions is not permitted`。
-* **根因**：Windows 上 PostgreSQL 不允许以管理员令牌运行 postmaster。
-* **规则**：管理脚本只能经 `pg_ctl.exe` / `initdb.exe` 调起（它们会以**受限令牌**重新执行 postmaster），**绝不直接调用 `postgres.exe`**；因此管理员/提权终端（含 GitHub runner 的管理员令牌）下 `pg-start` 仍可正常工作，无需 `schtasks /ru` 委派这类绕行方案。
-
-## 21. EDB Windows 二进制的头文件是扁平布局（`include\server\...`），不是 `include\postgresql\server\...`
-
-* **现象（2026-10 实测）**：白名单断言 `include\postgresql\server\postgres.h` 失败（`Required file missing after trimming`），实际 EDB zip 的解压树是 `include\server\postgres.h`、`include\internal\`、`include\libpq\`，`include\` 下**没有** `postgresql\` 这一层。
-* **根因**：Unix 的 `make install` 会把头文件装到 `$INCLUDEDIR/postgresql/...`，而 EDB 的 Windows MSVC 构建直接把 `src/include` 的目录平铺进 `include\`（`pg_config --includedir-server` 亦指向该扁平目录）。
-* **规则**：断言/引用 PG 头文件路径时以**真实解压树**为准（先下载真实样本再写断言，别照搬 Unix 布局）；本仓库用 `include\server\postgres.h` 作为"开发头文件在位"的哨兵文件。
-
-## 22. `initdb -D <dir>` 要求目标目录"不存在或为空"，管理脚本不得预建 `data\`
-
-* **现象（2026-10 安装闭环实测）**：安装后的 `pg-start` 首次启动初始化失败，`initdb` 报
-  `initdb: 错误: 目录 "…\data" 已存在，但不为空`（exit 1），首次启动直接卡死。
-* **根因**：`pg-start` 在调 `initdb` 之前先 `mkdir "%DATA%\logs"` 并把口令临时文件写到 `%DATA%\win-env.pw.tmp`，使 `-D` 目标目录**非空**；而 `initdb` 明确拒绝"已存在且非空"的目标目录（受控实验：**空目录 exit 0，含任意 1 个文件的目录 exit 1**）。
-* **为何没被暂存冒烟测试拦下**：冒烟测试用**独立的 scratch 目录**（`build/cache/pgsmoke`）、且直接调用 `initdb.exe`，不走管理脚本里"先建目录再 initdb"的那段逻辑，因此这条路径漏检；只有**真机静默安装 → 裸命令首次 `pg-start`** 才暴露。教训：管理脚本自身的逻辑要在**安装后的真实路径**上验证，不能只靠暂存树冒烟。
-* **规则**：管理脚本初始化集群时，`-D` 目标目录**只允许为空**——先只 `mkdir "%DATA%"`（或干脆不建、让 `initdb` 自建），口令临时文件一律放 `%TEMP%`，`logs\` 及其它运行期文件都在 `initdb` 成功**之后**才创建。
-
-## 23. OpenCV `BUILD_LIST` 剔除 gapi 后，`ade` 目标仍被导出进 `OpenCVModules.cmake`（引用不存在的 `libade.a`）
-
-* **现象（2026-10 CI 实测，OpenCV 4.14.0）**：MinGW 路线 configure shim 时 `find_package(OpenCV)` 失败，栈为 `OpenCVConfig.cmake` → `OpenCVModules.cmake`，报文 `The imported target "ade" references the file "…/x64/mingw/staticlib/libade.a" but this file does not exist`。
-* **根因**：`-DBUILD_LIST=core,imgproc` 只在 `OpenCVModule.cmake` 的白名单层剔掉 gapi，但 `modules/gapi/cmake/init.cmake` 在 configure 期仍被求值：`OCV_OPTION(WITH_ADE "…" ON)` 默认开启后经 `DownloadADE.cmake` 创建 `ade` 目标，并被 `ocv_install_target(... EXPORT OpenCVModules ...)` 写进安装出的 `OpenCVModules.cmake`——而 gapi 不在构建列表里，`libade.a` 从不产出。
-* **规则**：最小裁剪 OpenCV 时，凡"被 `BUILD_LIST` 剔除但仍会创建副作用目标"的模块，要显式关掉其开关；此处 `-DWITH_ADE=OFF` 命中 `init.cmake` 的 `if(NOT WITH_ADE) return()` 短路，`ade` 目标既不创建也不导出（对已剔除的 gapi 无任何影响）。注意 msvc 路线不走 `find_package`（cl 直编），本不会被这个坏 config 绊到，但仍加同一旗标以保持两条路线旗标集一致。
-
-## 24. OpenCV `cmake --install` 的头文件布局随 host 分支而变；Windows host 下是扁平的 `include\opencv2`（**无** `opencv4` 层）
-
-* **现象（2026-10 CI 实测，OpenCV 4.14.0）**：msvc 路线按目录名检索头文件目录（`Get-ChildItem -Recurse … -Directory -Filter opencv4`）落空，构建在 `opencv4 include dir not found under msvc-install\include` 处终止。
-* **根因**：`cmake/OpenCVInstallLayout.cmake` 里 `OPENCV_INCLUDE_INSTALL_PATH` 因 host 而异——Windows host 走 `elseif(WIN32 AND CMAKE_HOST_SYSTEM_NAME MATCHES Windows)` 分支，取 `include`，头文件由 `install(FILES … DESTINATION "${OPENCV_INCLUDE_INSTALL_PATH}/opencv2/…")` 直接落 `<prefix>\include\opencv2\…`；`opencv4` 这一层只在 UNIX / QNX 分支出现（`include\opencv4\opencv2\…`）。同一分支还决定 `OPENCV_CONFIG_INSTALL_PATH "."`、静态库落 `x64/<runtime>/staticlib`。
-* **规则**：定位 OpenCV 头文件根目录（`-I`）时**不要假设布局**——递归检索 `opencv_modules.hpp`（必位于 `opencv2\` 内）取其上一级目录作为 include 根，Windows / UNIX 两种布局通吃；检索为空即显式 `throw`，不要退化成"猜一个路径"。
-
-## 25. 手写 cl 链接静态 OpenCV 时，必须显式补齐其传递依赖（zlib / ole32）
-
-* **现象（2026-10 CI 实测，OpenCV 4.14.0 / MSVC 静态 core,imgproc）**：`cl ... /link opencv_core4140.lib opencv_imgproc4140.lib` 报 `LNK2019: unresolved external symbol __imp_CoCreateGuid`（`cv::tempfile`）、`gzputs`/`gzgets`/`gzrewind`/`gzeof`/`gzclose`/`gzopen`（`cv::FileStorage`），合计 `LNK1120: 7 unresolved externals`。
-* **根因**：静态 OpenCV 的链接不是"两个模块库"就够——`opencv_core` 还依赖内置 zlib（`FileStorage` 的 gz 系列）与系统库 ole32（`CoCreateGuid`）。走 `find_package` 时这些经模块的 `INTERFACE_LINK_LIBRARIES` 自动带上；绕过它手写 cl，就得自己列全。
-* **规则**：绕开 `find_package` 手写链接静态 OpenCV 时，必须补传递依赖：`zlib.lib`（OpenCV 内置 zlib 静态库，装在 `OPENCV_3P_LIB_INSTALL_PATH` = `<prefix>/x64/<rt>/staticlib`，**与模块库同一目录**，故共用同一个 `LIBPATH`，按 glob `zlib*.lib` 取实名）+ `ole32.lib`（Windows SDK 系统库，vcvars 的 LIBPATH 已覆盖）。任何"缺库"报错都以 LNK2019/LNK1120 形式出现，先从未解析符号判断它属于哪个库。
 
 ## 26. CI 内查询 GitHub releases API 必须带 token，否则共享出口 IP 易 403
 
@@ -339,12 +231,6 @@ if ($code -ne 0) { throw ... }
 * **根因**：匿名访问 GitHub API 限额 60 次/小时且**按出口 IP 计**；GitHub 托管 runner 共享出口 IP，配额极易被同池其它 job 耗尽而 403——同一 workflow 里 `resolve` job 因带了 `secrets.GITHUB_TOKEN` 反而不受影响，恰好反证了这一点。
 * **规则**：凡是 CI 内调用 GitHub API 的步骤，都要经 `env:` 注入 `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}`；脚本侧按"**存在该变量才**加 `Authorization: Bearer`"实现，保证本地匿名直连行为不变（见 [setup-mingw.ps1](../builders/opencv-shim/setup-mingw.ps1)）。
 
-## 27. python.org install-manager 索引 `index-windows.json` 是对象（条目在 `.versions`），当数组读会静默落空
-
-* **现象（2026-10 实测，3.15.0/3.16.0a1 时期）**：`Invoke-RestMethod https://www.python.org/ftp/python/index-windows.json` 之后按数组过滤（`@($doc) | Where-Object { $_.company -eq 'PythonCore' ... }`）**一条都筛不出来**；打印 `@($doc).Count` 得到 **1**，看上去像"文档里只有一条记录"，而实际有 258 条。
-* **根因**：该文档顶层是**对象**，不是数组：`{ "next": "...", "versions": [ ...258 条... ] }`。`Invoke-RestMethod` 把它反序列化成 `PSCustomObject`，`@($doc)` 只是把这**一个对象**包成单元素数组，条目列表在 `$doc.versions`。
-* **事实（同一次实测）**：条目字段有 `id`、`company`、`sort-version`、`url`、`hash.sha256`、`display-name`。`id` 形如 `<company>-<x.y>[-t]-<arch>`：`company` ∈ {`PythonCore`（常规 CPython）、`PythonEmbed`（embeddable）、`PythonTest`（测试用运行时）}；free-threaded 线把 `t` 挂在次版本号后面（`pythoncore-3.15t-64`），与 `-64` 的锚定正则 `^pythoncore-\d+\.\d+-64$` 天然不相交；`arch` ∈ {`32`,`64`,`arm64`}。`sort-version` 是发现用的排序键：正式版是**纯 `x.y.z`**，预发布带后缀（`3.16.0a1`、`3.15.0b3`）——存在 `pythoncore-3.16-64` 这种"新轨道但只有 alpha"的条目，只有加 `sort-version -match '^\d+\.\d+\.\d+$'` 才不会被它顶掉（否则 `[version]'3.16.0a1'` 转换也会直接抛错）。
-* **规则**：解析前先打印顶层属性名（`Get-Member -MemberType NoteProperty`）确认形态，别按"有多个版本 → 一定是数组"推断；下载 URL 与 `hash.sha256` 一律直接取自条目，不自行拼 URL。
 
 ## 28. PS 5.1 会把原生命令参数里的内嵌双引号剥掉（含空格的载荷还会被切开）
 
@@ -352,12 +238,6 @@ if ($code -ne 0) { throw ... }
 * **根因**：PS 5.1 拼原生命令命令行时不转义参数里的内嵌双引号（该行为到 PS 7 才改善），双引号被解析层吃掉后，剩余文本再按空格分词。
 * **规则**：向 `python -c` / `node -e` / `perl -e` 这类命令传脚本载荷时，载荷内部**只用单引号**，PS 侧用双引号字符串包住它（`-c "print(t.eval('info patchlevel'))"`）；确实需要内嵌双引号或多行时，写临时 `.ps`/`.py` 文件或经 stdin 送入，别把它塞进命令行。
 
-## 29. MinGW（posix 线程模型）下 `-static-libgcc -static-libstdc++` 消不掉 `libwinpthread-1.dll`
-
-* **现象（2026-10 CI 实测，gnu 路线 shim 导入表闸门）**：`imports: api-ms-win-crt-*.dll…, KERNEL32.dll, libwinpthread-1.dll, ole32.dll`，闸门报 `unexpected imports: libwinpthread-1.dll, ole32.dll (shim must stay self-contained)` 并 exit 1。该闸门此前从未真正跑到（更早阶段就失败），这是首次看到真实导入表。
-* **根因（`libwinpthread-1.dll` 部分）**：WinLibs `x86_64-posix-seh` 是 **POSIX 线程模型**。`-static-libstdc++` 只把 libstdc++ **库本身**静态链入，但**静态 libstdc++ 内部仍动态导入 `libwinpthread-1.dll`**（线程原语走它），而 `-static-libgcc`/`-static-libstdc++` 都**不含** libwinpthread——所以两个开关都设了也消不掉。仅关 OpenCV 的 pthreads 并行框架（`-DWITH_PTHREADS_PF=OFF`）同样不够。
-* **规则**：MinGW 上要"单文件、零 C++ 运行库依赖"，用 `-static`（**超集**：把 libgcc、libstdc++、libwinpthread 一并静态链入）而不是只加 `-static-libgcc -static-libstdc++`。OS CRT（`msvcrt.dll`/`ucrtbase.dll`）在 MinGW 上只有导入库、没有静态形式，故仍是动态导入，`KERNEL32.dll` 同理——这属于允许范围。
-* **附带（`ole32.dll` 部分）**：`ole32.dll` 是 Windows 自带 OS 组件（OpenCV core `modules/core/src/system.cpp` 的 `cv::tempfile` 用 `CoCreateGuid`），与 `KERNEL32.dll` 同一类，**不是**可再发行运行库，不应判为"破坏自包含"——闸门白名单须纳入它。msvc 路线链接 `ole32.lib` 也会导入该 DLL。
 
 ## 30. 按"表头切区段"解析 `objdump -p` 的导出名，在真实 CI 上解析为空——改为整段扫描
 

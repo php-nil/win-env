@@ -2,14 +2,21 @@
 ; win-env - PHP 8.5 one-click installer for Windows x64
 ;
 ; Compiled by builders/php/build.ps1 via ISCC.exe with these defines:
-;   /DMyAppVersion=<8.5.x>
+;   /DMyAppVersion=<8.5.x, e.g. 8.5.12-1>
+;   /DMyAppVersionInfo=<numeric form for VersionInfoVersion, e.g. 8.5.12.1>
 ;   /DXdebugVersion=<x.y.z>
 ;   /DStageDir=<staged runtime tree>
 ;   /DOutputDir=<output folder>
 ;   /DOutputBaseFilename=<setup exe base name>
 ;
+; MyAppVersion is the upstream spelling (a re-spin is "8.5.12-1");
+; MyAppVersionInfo must be purely numeric because Inno Setup's
+; VersionInfoVersion accepts at most four numeric components.
 #ifndef MyAppVersion
   #error MyAppVersion must be defined, e.g. /DMyAppVersion=8.5.11
+#endif
+#ifndef MyAppVersionInfo
+  #define MyAppVersionInfo MyAppVersion
 #endif
 #ifndef XdebugVersion
   #define XdebugVersion "0.0.0"
@@ -48,7 +55,7 @@ WizardStyle=modern
 SetupIconFile=setup.ico
 UninstallDisplayIcon={app}\php.exe
 UninstallDisplayName=PHP {#MyAppVersion} (x64, win-env)
-VersionInfoVersion={#MyAppVersion}
+VersionInfoVersion={#MyAppVersionInfo}
 VersionInfoCompany=win-env
 VersionInfoDescription=PHP 8.5 (x64) one-click installer
 OutputDir={#OutputDir}

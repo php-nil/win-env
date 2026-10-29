@@ -17,7 +17,8 @@
       by default.
 
 .PARAMETER PhpVersion
-    Exact PHP 8.5 patch version, e.g. 8.5.11. Empty = latest published 8.5.x.
+    Exact PHP 8.5 patch version, e.g. 8.5.11. Re-spin releases keep the
+    upstream spelling, e.g. 8.5.12-1. Empty = latest published 8.5.x.
 
 .PARAMETER BuildDir
     Working directory for cache, staging and output. Default: <repo>\build.
@@ -108,7 +109,18 @@ function Download-File([string]$url, [string]$dest, [switch]$NoCache) {
 }
 
 function Test-VersionString([string]$v) {
-    return $v -match '^\d+\.\d+\.\d+$'
+    # PHP re-spins are published as e.g. 8.5.12-1 (security rebuild of the
+    # same patch release), so a trailing -N suffix is a valid version.
+    return $v -match '^\d+\.\d+\.\d+(-\d+)?$'
+}
+
+function Get-VersionSortKey([string]$v) {
+    # [version] cannot parse the re-spin form; map 8.5.12-1 -> 8.5.12.1 so
+    # both forms sort numerically and the newest re-spin wins.
+    if ($v -match '^(\d+\.\d+\.\d+)-(\d+)$') {
+        return [version]("$($matches[1]).$($matches[2])")
+    }
+    return [version]$v
 }
 
 function Install-ExtensionDll([string]$ZipPath, [string]$DllName, [string]$ExtDir) {
@@ -131,15 +143,23 @@ if ($PhpVersion) {
 }
 else {
     $hrefs = Get-LinkHrefs $PhpBaseUrl
+    # Asset names may carry a re-spin suffix (php-8.5.12-1-nts-...zip).
     $PhpVersion = $hrefs |
         ForEach-Object {
-            if ($_ -match 'php-(8\.5\.\d+)-nts-Win32-vs17-x64\.zip$') { $matches[1] }
+            if ($_ -match '^php-(8\.5\.\d+(?:-\d+)?)-nts-Win32-vs17-x64\.zip$') { $matches[1] }
         } |
-        Sort-Object -Unique { [version]$_ } |
+        Sort-Object -Unique { Get-VersionSortKey $_ } |
         Select-Object -Last 1
     if (-not $PhpVersion) { throw 'Could not resolve latest PHP 8.5.x from windows.php.net' }
 }
 $PhpZipName = "php-$PhpVersion-nts-Win32-vs17-x64.zip"
+# Inno Setup's VersionInfoVersion only accepts up to four numeric components,
+# so the re-spin form 8.5.12-1 is expressed as 8.5.12.1 there while every
+# user-visible string keeps the upstream 8.5.12-1 spelling.
+$PhpVersionInfo = if ($PhpVersion -match '^(\d+\.\d+\.\d+)-(\d+)$') {
+    "$($matches[1]).$($matches[2])"
+}
+else { $PhpVersion }
 Write-Host "  PHP version : $PhpVersion"
 Write-Host "  PHP package : $PhpZipName"
 
@@ -496,6 +516,7 @@ if (-not $SkipCompile) {
     Write-Step 'Compiling installer'
     & $iscc (Join-Path $ScriptDir 'setup.iss') /Q `
         "/DMyAppVersion=$PhpVersion" `
+        "/DMyAppVersionInfo=$PhpVersionInfo" `
         "/DXdebugVersion=$XdebugVersion" `
         "/DStageDir=$StageDir" `
         "/DOutputDir=$OutDir" `

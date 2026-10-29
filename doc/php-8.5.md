@@ -31,7 +31,7 @@
 
 | 参数 | 说明 |
 | --- | --- |
-| `php_version` | 留空自动选取 windows.php.net 最新发布的 8.5.x；也可手动指定，如 `8.5.11` |
+| `php_version` | 留空自动选取 windows.php.net 最新发布的 8.5.x（含 re-spin，如 `8.5.12-1`）；也可手动指定，如 `8.5.11`、`8.5.12-1` |
 | `nilpack_version` | 内置 `nil` 命令所用 [php-nil/nilpack](https://github.com/php-nil/nilpack) 的 release tag（不带 `v`），默认 `0.2` |
 | `draft_release` | 勾选后 Release 以草稿形式发布，不打公开标签 |
 
@@ -64,7 +64,7 @@
 
 | 组件 | 来源 | 取用内容 |
 | --- | --- | --- |
-| PHP | <https://windows.php.net/downloads/releases/> | `php-<ver>-nts-Win32-vs17-x64.zip` 整包解压为暂存树 |
+| PHP | <https://windows.php.net/downloads/releases/> | `php-<ver>-nts-Win32-vs17-x64.zip` 整包解压为暂存树（re-spin 版本形如 `php-8.5.12-1-nts-Win32-vs17-x64.zip`） |
 | Xdebug | <https://windows.php.net/downloads/pecl/releases/xdebug/> | `php_xdebug-<ver>-8.5-nts-vs17-x64.zip` 中的 `php_xdebug.dll`，放入 `ext\` |
 | APCu | <https://windows.php.net/downloads/pecl/releases/apcu/> | `php_apcu-<ver>-8.5-nts-vs17-x64.zip` 中的 `php_apcu.dll`，放入 `ext\`，默认开启 |
 | nilpack | <https://github.com/php-nil/nilpack/releases>（v0.2） | `nilpack.phar` 放入安装根目录，配 `nil.bat` 包装器提供 `nil` 命令 |
@@ -114,6 +114,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 ## 6. 设计约定
 
 - **不硬编码补丁版本号**：运行时解析官方目录列表；解析为空立即终止并报错，不猜测 URL。
+- **re-spin 版本原样保留**：PHP 安全重建版在官方目录里是 `php-8.5.12-1-nts-Win32-vs17-x64.zip` 这种带 `-N` 后缀的名字，版本发现的正则与 `-PhpVersion` 校验都接受该后缀；排序时把 `8.5.12-1` 映射为四段 `8.5.12.1` 以便 `[version]` 数值比较。Release tag / 产物名 / 说明文本沿用上游写法（`php-8.5.12-1`），只有 Inno 的 `VersionInfoVersion`（只收最多四段纯数字）用 `/DMyAppVersionInfo=8.5.12.1`，`AppVersion` 仍显示 `8.5.12-1`（`setup.iss` 中 `MyAppVersionInfo` 默认回落到 `MyAppVersion`，普通版本无需额外参数）。
 - 暂存目录（`build/stage/php`，与其他环境的暂存树隔离）根目录即安装后的 `C:\pf\php-8.5`，安装器只负责原样释放与少量配置改写（占位符替换、PATH）。
 - 下载缓存于 `build/cache`，重复构建不重复下载；下载失败自动重试 3 次。
 - 组装完成有强制冒烟测试：暂存 `php.exe -v` 必须看到 PHP 8.5 与 Xdebug；`php.exe -r` 必须确认 APCu 已加载、CLI 下默认不生效（`apc.enable_cli=0`）、且 `-d apc.enable_cli=1` 时 store/fetch 正常；`date_default_timezone_get()` 必须为 `Asia/Shanghai`；`php.exe nilpack.phar --version` 必须输出 `Nil Pack Tool`，任一失败即终止，绝不发布坏包。

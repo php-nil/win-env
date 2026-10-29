@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       php_version:
-        description: 'PHP 8.5 patch version, e.g. 8.5.11. Leave empty for the latest published 8.5.x.'
+        description: 'PHP 8.5 patch version, e.g. 8.5.11 (re-spin: 8.5.12-1). Leave empty for the latest published 8.5.x.'
         required: false
         default: ''
       nilpack_version:
