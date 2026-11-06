@@ -1,6 +1,9 @@
 name: Build Git
 
 on:
+  schedule:
+    # 每周二 02:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周一 18:00
+    - cron: '0 18 * * 1'
   workflow_dispatch:
     inputs:
       git_version:
@@ -12,6 +15,11 @@ on:
         type: boolean
         required: false
         default: false
+
+# 定时与手动构建可能撞车；按环境串行化，避免互相覆盖 build/stage 与常青别名资产
+concurrency:
+  group: build-git
+  cancel-in-progress: false
 
 permissions:
   contents: write

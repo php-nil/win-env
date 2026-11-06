@@ -1,15 +1,25 @@
-# OpenCV shim · MSVC 备选路线（设计说明）
+# OpenCV shim 构建说明（gnu 默认 / msvc 备选）
 
-> **状态**：备选路线，已实现于 [build-opencv-shim.yml](../.github/workflows/build-opencv-shim.yml)
-> 的 `msvc` job。默认交付仍是 MinGW 自包含路线
-> （[build.ps1](../builders/opencv-shim/build.ps1)：导入表只剩
+> **状态**：本文件同时覆盖两条路线。**gnu（MinGW 自包含）是默认交付**，实现于
+> [build.ps1](../builders/opencv-shim/build.ps1)（`gnu` job）：导入表只剩
 > `KERNEL32.dll` + OS CRT（`msvcrt.dll`；ucrt 版工具链为 `ucrtbase.dll` +
 > `api-ms-win-*.dll`）的单文件 `opencv_shim.dll`，C++ 运行库由
 > `-static-libgcc -static-libstdc++` 静态链入、并关掉 pthreads 并行框架
 > （`-DWITH_PTHREADS_PF=OFF`，见 §3.1）以免拖出 `libwinpthread-1.dll`、同时关掉
-> 未被构建却被导出进安装 config 的 ade 目标（`-DWITH_ADE=OFF`，见 §4 第 2 步））。本文件保留 MSVC
-> 路线的技术依据与旗标，供需要 MSVC 调试链（PDB / ASan / VS）时对照。
+> 未被构建却被导出进安装 config 的 ade 目标（`-DWITH_ADE=OFF`，见 §4 第 2 步）。
+> **msvc（cl /MT 直编）是备选路线**，实现于
+> [build-opencv-shim.yml](../.github/workflows/build-opencv-shim.yml) 的 `msvc` job，
+> 保留其技术依据与旗标，供需要 MSVC 调试链（PDB / ASan / VS）时对照。
 > 两条路线共用同一份 `builders/opencv-shim/opencv_shim.cpp`。
+
+## 0. 路线速览
+
+| 路线 | 定位 | 实现 | 产物 / 用途 |
+| --- | --- | --- | --- |
+| gnu（MinGW） | **默认交付** | [`gnu` job](../.github/workflows/build-opencv-shim.yml) → [build.ps1](../builders/opencv-shim/build.ps1) + [CMakeLists.txt](../builders/opencv-shim/CMakeLists.txt) | 单文件 `opencv_shim.dll`，零 C++ 运行时依赖（导入闭包见 §3.1 / §3.2） |
+| msvc | 备选 | [build-opencv-shim.yml](../.github/workflows/build-opencv-shim.yml) 的 `msvc` job | 同一份 shim 的 /MT 直编产物；功能收益为零，只在需要 MSVC 调试链时使用 |
+
+下文各节结论对两条路线共同适用，涉及旗标差异处会显式标注 gnu / msvc；§4 的构建步骤以 `msvc` job 为蓝本。
 
 ---
 

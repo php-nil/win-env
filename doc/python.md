@@ -29,7 +29,7 @@
 
 ## 2. 触发构建（GitHub Actions）
 
-手动触发，构建成功后自动发布 Release：
+手动触发，构建成功后自动发布 Release；另有每周定时自动构建（北京时间每周日 02:00，cron `0 18 * * 6` = UTC 周六 18:00）。定时触发不携带 inputs：`python_version` / `major_track` 留空即自动发现官方索引中最新的正式版。
 
 1. 仓库 **Actions** 页签 → **Build Python** → **Run workflow**；
 2. 输入参数：

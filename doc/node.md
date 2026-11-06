@@ -25,7 +25,7 @@
 
 ## 2. 触发构建（GitHub Actions）
 
-手动触发，构建成功后自动发布 Release：
+手动触发，构建成功后自动发布 Release；另有每周定时自动构建（北京时间每周四 02:00，cron `0 18 * * 3` = UTC 周三 18:00）。定时触发不携带 inputs：`node_version` / `major_track` 留空即自动发现最新 LTS。
 
 1. 仓库 **Actions** 页签 → **Build Node.js** → **Run workflow**；
 2. 输入参数：

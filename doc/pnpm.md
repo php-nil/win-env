@@ -24,9 +24,9 @@
 
 ## 2. 触发构建（GitHub Actions）
 
-手动触发，构建成功后自动发布 Release：
+手动触发，构建成功后自动发布 Release；另有每周定时自动构建（北京时间每周一 14:00，cron `0 6 * * 1` = UTC 周一 06:00）。定时触发不携带 inputs：`pnpm_version` 留空自动发现最新稳定版，`major_track` 空值回落到 `12`。
 
-1. 仓库 **Actions** 页签 → **Build pnpm (Windows)** → **Run workflow**；
+1. 仓库 **Actions** 页签 → **Build pnpm** → **Run workflow**；
 2. 输入参数：
 
 | 参数 | 说明 |

@@ -12,7 +12,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 产物文件 | `php-<version>-setup-x64.exe`（约 25 MB，LZMA2 固实压缩 + 128 MB 字典，2026-10 实测） |
+| 产物文件 | `php-<version>-setup-x64.exe`（约 25 MiB；2026-11 实测裁剪后 26,340,106 字节 / 25.12 MiB，LZMA2 固实压缩 + 128 MB 字典） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（组件版本/来源元数据） |
 | Release 标签 | `php-<version>`；另有常青别名 `php-latest`（资产名固定 `php-setup-x64.exe`，README 下载链接指向它） |
 | PHP 规格 | 8.5.x · NTS（非线程安全）· VS17 · x64 |
@@ -24,9 +24,9 @@
 
 ## 2. 触发构建（GitHub Actions）
 
-手动触发，构建成功后自动发布 Release：
+手动触发，构建成功后自动发布 Release；另有每周定时自动构建（北京时间每周一 02:00，cron `0 18 * * 0` = UTC 周日 18:00）。定时触发不携带 inputs：版本类输入留空走自动发现官方最新版，`nilpack_version` 空值回落到 `0.2`。
 
-1. 仓库 **Actions** 页签 → **Build PHP 8.5 (Windows)** → **Run workflow**；
+1. 仓库 **Actions** 页签 → **Build PHP 8.5** → **Run workflow**；
 2. 输入参数：
 
 | 参数 | 说明 |
@@ -76,6 +76,41 @@
 
 `pdo_pgsql` 的运行依赖 `libpq.dll` 已包含在 PHP 官方 Windows 包根目录，无需额外获取。
 
+### 4.1 暂存树裁剪（体积优化，2026-11 落地）
+
+官方 zip **始终整包解压**后再删减（不改写"只解压部分条目"的脆弱写法，上游布局变化不会产出残缺树）。清单集中在 `build.ps1` 的 `$TrimPaths`，逐项删除并打印真实字节数；随后断言 `php.exe`、`php.ini`、`ext\php_xdebug.dll`、`ext\php_apcu.dll`、`cacert.pem`、`composer.phar`、`nilpack.phar` 与 7 个 CRT DLL 全部仍在（缺一即 throw），最后照常跑冒烟测试。
+
+删除项（实测自 PHP 8.5.12-1 官方包）：
+
+| 路径 | 字节 | 删除后损失的能力 |
+| --- | --- | --- |
+| `phpdbg.exe` | 290,304 | 无。独立的命令行调试器，调试能力由包内 Xdebug 覆盖 |
+| `php8phpdbg.dll` | 249,344 | 无。仅 `phpdbg.exe` 依赖，随其一同删除 |
+| `extras\sbom`（3 个 JSON） | 564,076 | 无。上游 SBOM / OpenVEX 清单，不参与运行 |
+| `README.md` | 5,366 | 无 |
+| `news.txt` | 84,544 | 无 |
+| **合计** | **1,193,634**（1.14 MiB） | — |
+
+`deploy\` 在当前 8.5.x 官方包中已不存在（清单保留该条目：若上游重新引入，其 VC++ 部署脚本会被自动裁掉，我们已用 app-local CRT DLL 替代），构建日志输出 `absent, skipped`。
+
+保留项与理由：
+
+- **`php-cgi.exe`（107,008 字节）**：FastCGI（IIS）场景的唯一入口，属于本包面向的 CLI、IIS/FastCGI、Composer 三类场景之一；删除只省约 0.1 MiB 却会让整条 FastCGI 场景失效，故保留。
+- `license.txt`（3,272 字节）：PHP 自身许可证，随二进制再分发时应保留。
+- `readme-redist-bins.txt`（760,831 字节）：包内第三方二进制（ICU、OpenSSL 等）的再分发说明，属合规文件，不按普通 README 处理。
+- `extras\ssl\openssl.cnf` + `legacy.dll`（186,491 字节）：`extras\` 现已不是"安装说明 + ini 模板"，而是 SBOM + OpenSSL legacy provider 配置；后者在显式 `OPENSSL_CONF` 或 legacy 算法场景下可能用到，体积小，保留。
+- `ext\` 全部 DLL：默认未启用的扩展（mysqli、pdo_mysql 等）按 §3 承诺"取消注释即可用"，删 DLL 会破坏该承诺（`php_gd.dll` 10.1 MiB、`php_fileinfo.dll` 10.0 MiB 是 ext 内的最大项，属于本轮**不**动的范围）。
+- `php-win.exe`、`php.ini-development` / `php.ini-production`、`snapshot.txt`、`dev\php8.lib`、`php8embed.lib`、`deplister.exe`、`pharcommand.phar`、`lib\enchant\`：本轮未裁剪；`dev\`（嵌入用导入库）、`php8embed.lib`、`deplister.exe`（依赖查看器）与 `pharcommand.phar` 属开发/嵌入用途，后续如继续压体积可优先评估。
+
+实测体积（同机、同一批 cacert/Composer 版本，仅差裁剪清单）：
+
+| 指标 | 裁剪前 | 裁剪后 | 变化 |
+| --- | --- | --- | --- |
+| 暂存树（含生成后的 `php.ini`） | 108,703,069 字节（103.67 MiB） | 107,509,435 字节（102.53 MiB） | −1,193,634 字节（−1.10%） |
+| 安装包 exe | 26,484,865 字节（25.26 MiB） | 26,340,106 字节（25.12 MiB） | −144,759 字节（−0.55%） |
+
+> 安装包端降幅远小于暂存树降幅：被删项多为文本 / SBOM 与两个小体积可执行文件，在 LZMA2 固实压缩下本就占比很低。
+
 ## 5. 本地构建
 
 前置：Windows + PowerShell 5+；编译安装包需要 Inno Setup 6（仅组装阶段可跳过）。
@@ -117,6 +152,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - **re-spin 版本原样保留**：PHP 安全重建版在官方目录里是 `php-8.5.12-1-nts-Win32-vs17-x64.zip` 这种带 `-N` 后缀的名字，版本发现的正则与 `-PhpVersion` 校验都接受该后缀；排序时把 `8.5.12-1` 映射为四段 `8.5.12.1` 以便 `[version]` 数值比较。Release tag / 产物名 / 说明文本沿用上游写法（`php-8.5.12-1`），只有 Inno 的 `VersionInfoVersion`（只收最多四段纯数字）用 `/DMyAppVersionInfo=8.5.12.1`，`AppVersion` 仍显示 `8.5.12-1`（`setup.iss` 中 `MyAppVersionInfo` 默认回落到 `MyAppVersion`，普通版本无需额外参数）。
 - 暂存目录（`build/stage/php`，与其他环境的暂存树隔离）根目录即安装后的 `C:\pf\php-8.5`，安装器只负责原样释放与少量配置改写（占位符替换、PATH）。
 - 下载缓存于 `build/cache`，重复构建不重复下载；下载失败自动重试 3 次。
+- 体积裁剪只在整包解压、组装完成**之后**执行，清单单一维护在 `build.ps1` 的 `$TrimPaths`（删减项与保留理由见 §4.1）；删减后先断言关键文件与 7 个 CRT DLL 仍在，再进入冒烟测试。
 - 组装完成有强制冒烟测试：暂存 `php.exe -v` 必须看到 PHP 8.5 与 Xdebug；`php.exe -r` 必须确认 APCu 已加载、CLI 下默认不生效（`apc.enable_cli=0`）、且 `-d apc.enable_cli=1` 时 store/fetch 正常；`date_default_timezone_get()` 必须为 `Asia/Shanghai`；`php.exe nilpack.phar --version` 必须输出 `Nil Pack Tool`，任一失败即终止，绝不发布坏包。
 - php.ini 扩展处理有四道保险：注释行按需取消注释、`$DisabledExtensions` 强制禁用清单（防止上游把 mysqli/pdo_mysql 改为默认开启）、重复生效行自动注释去重，以及 PECL 扩展（APCu）不走 php.ini-development 注释行、由构建脚本直接追加 `extension=apcu` 与 `[apcu]` 配置块（`apc.enabled=1`、`apc.enable_cli=0`、`apc.shm_size=32M`）。`date.timezone` 同理由构建脚本写入（`Asia/Shanghai`），不依赖 php.ini-development 的注释行。
 - VC++ 运行库走 app-local 而非内置 vc_redist 安装器：保持"暂存目录即安装目录 + 安装器只做原样释放"的契约，安装包仅 +0.26 MiB（内置安装器方案约 +24 MiB 且需安装期执行 MSI）。`vc_redist.x64.exe` 与 cacert.pem 同理每次构建重新下载（aka.ms 始终指向最新 14.x，缓存会钉住旧运行库），版本号从 exe 的 FileVersion 读取记入 `build-info.json`；DLL 集覆盖暂存树全部 vcruntime140/msvcp140 导入，OpenMP/AMP/ConcRT/C++/CX 运行库（vcomp140/vcamp140/concrt140/vccorlib140/vcruntime140_threads）经全树导入扫描确认无人引用，不随包。

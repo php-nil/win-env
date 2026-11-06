@@ -27,7 +27,7 @@
 
 ## 2. 触发构建（GitHub Actions）
 
-手动触发，构建成功后自动发布 Release：
+手动触发，构建成功后自动发布 Release；另有每周定时自动构建（北京时间每周五 02:00，cron `0 18 * * 4` = UTC 周四 18:00）。定时触发不携带 inputs：`rust_version` 留空即从官方 stable channel 自动发现最新版。
 
 1. 仓库 **Actions** 页签 → **Build Rust MSVC** → **Run workflow**；
 2. 输入参数：

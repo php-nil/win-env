@@ -5,14 +5,14 @@
 ## 一、项目概述
 
 * **项目名称**：win-env
-* **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动触发**构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
+* **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动 + 每周错峰定时**触发构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
 * **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、APCu、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)；Rust MSVC（stable channel，x86_64-pc-windows-msvc，默认 `C:\pf\rust`，内置 LLD 链接器与 Windows SDK/CRT），详见 [doc/rust.md](doc/rust.md)；PostgreSQL（EDB 官方 binaries zip，x64，默认 `C:\pf\postgres-<major>`，含 `pg-start`/`pg-stop`/`pg-restart`/`pg-status` 管理脚本），详见 [doc/postgres.md](doc/postgres.md)；Chromium（ungoogled-chromium 官方便携包，x64，默认 `C:\pf\chromium`，含桌面快捷方式），详见 [doc/chromium.md](doc/chromium.md)；Python（python.org 官方 `python-<ver>-amd64.zip` pythoncore 可重定位布局，x64，默认 `C:\pf\python`，内置 pip/venv/tkinter，默认裁剪 `Doc\`），详见 [doc/python.md](doc/python.md)。
 
 ## 二、仓库结构
 
 | 路径 | 说明 |
 | --- | --- |
-| `.github/workflows/build-<name>.yml` | 各环境的构建工作流，一律 `workflow_dispatch` 手动触发，构建成功自动发 Release |
+| `.github/workflows/build-<name>.yml` | 各环境的构建工作流：`workflow_dispatch` 手动触发 + 每周错峰 `schedule` 定时（错峰表与 cron 见 §3.1），构建成功自动发 Release |
 | `builders/<name>/build.ps1` | 构建脚本：版本发现 → 下载 → 暂存组装 → 冒烟测试 → 编译安装包 → 元数据/发布说明 |
 | `builders/<name>/setup.iss` | Inno Setup 安装器脚本（含随仓库自带的 `Languages/ChineseSimplified.isl`） |
 | `builders/opencv-shim/` | OpenCV shim 专用构建资产（无安装包）：便携 MinGW 引导 `setup-mingw.ps1`，`CMakeLists.txt` + `opencv_shim.cpp` + `build.ps1`（gnu 路线构建），由 `build-opencv-shim.yml` 调用；产物为裸 `opencv_shim.dll` artifact |
@@ -30,6 +30,22 @@
 
 ### 3.1 构建与交付
 
+* **触发方式**：`workflow_dispatch` 手动 + 每周一次 `schedule` 定时，各环境错开到不同时间点。cron 一律用 **UTC** 表达，YAML 注释里标注对应的**北京时间**（UTC+8）；当前排期如下（同一环境的定时与手动构建由 `concurrency: group: build-<env>` + `cancel-in-progress: false` 串行，避免互相覆盖 `build/stage` 与常青别名资产）：
+
+  | 环境 | cron（UTC） | 北京时间 |
+  | --- | --- | --- |
+  | php | `0 18 * * 0` | 周一 02:00 |
+  | pnpm | `0 6 * * 1` | 周一 14:00 |
+  | git | `0 18 * * 1` | 周二 02:00 |
+  | pwsh | `0 18 * * 2` | 周三 02:00 |
+  | node | `0 18 * * 3` | 周四 02:00 |
+  | rust | `0 18 * * 4` | 周五 02:00 |
+  | postgres | `0 18 * * 5` | 周六 02:00 |
+  | chromium | `0 6 * * 6` | 周六 14:00 |
+  | python | `0 18 * * 6` | 周日 02:00 |
+
+* **定时触发的输入必须留空即安全**：`schedule` 不携带 inputs（`inputs.*` 为空而非 input 的 `default`），所有 input 必须 `required: false`，且空值要落到"自动发现官方最新版本"的路径；会锁死旧版本或产生非预期行为的默认值须改成安全回落（如 PHP 的 `nilpack_version` 空值回落 `0.2`）。
+* **GitHub schedule 的运维事实**：定时只在**默认分支**的 workflow 文件上生效；仓库连续 **60 天无提交活动**后，schedule 会被 GitHub **自动停用**（重新有提交/手动触发后才会恢复）。
 * **版本不硬编码**：补丁版本运行时从官方目录列表解析；解析为空立即终止报错，不猜测 URL。workflow 保留手动指定版本的输入框。
 * **组件只走官方渠道**（PHP/Xdebug/APCu 走 windows.php.net，CA 走 curl.se，nilpack 走其 GitHub Release）；来源写入 `build-info.json` 与发布说明。
 * **暂存目录即安装目录**：`build/stage/<env>` 根目录布局等于安装后的 `C:\pf\<env>`（各环境暂存树按目录隔离），安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。
@@ -42,7 +58,7 @@
 
 ### 3.2 安装器规则
 
-* 默认目录 `C:\pf\<env>-<major.minor>`，向导可改；需要管理员权限（C 盘根目录 + 系统 PATH）。
+* 默认目录 `C:\pf\<env>`（多主版本并存的环境带版本后缀，如 `php-8.5`、`postgres-18`），向导可改；需要管理员权限（C 盘根目录 + 系统 PATH）。
 * **PATH 必加、无安装选项**：安装目录写入**系统** PATH，幂等追加、卸载时精确移除该条目（不动其他条目），并广播 `WM_SETTINGCHANGE`；已打开的旧终端不生效，文档须提示"新开命令行"。
 * 安装目录相关路径（证书等）使用 `__APP_DIR__` 占位符，安装器在 `ssPostInstall` 替换为真实目录，保证改目录不出错。
 * 包内命令（如 `nil`）用安装根目录的 `.bat` 包装器（`%~dp0php.exe %~dp0xxx.phar %*`）实现，禁止依赖调用方工作目录。
@@ -91,6 +107,7 @@
 | PowerShell 7 打包文档 | [doc/pwsh.md](doc/pwsh.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | Node.js 打包文档 | [doc/node.md](doc/node.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
 | Rust MSVC 打包文档 | [doc/rust.md](doc/rust.md) | 产物规格、workflow 参数、安装行为、组件来源、本地构建、设计约定 |
+| Rust MSVC 历史调研 | [doc/rust-msvc.md](doc/rust-msvc.md) | 实施前的路线调研存档（非当前实现），当前权威说明见 doc/rust.md |
 | PostgreSQL 打包文档 | [doc/postgres.md](doc/postgres.md) | 产物规格、workflow 参数、安装行为（含管理脚本）、组件来源与裁剪、本地构建、设计约定 |
 | Chromium 打包文档 | [doc/chromium.md](doc/chromium.md) | 产物规格、workflow 参数、安装行为（桌面快捷方式/PATH）、组件来源与镜像用法、本地构建、设计约定 |
 | Python 打包文档 | [doc/python.md](doc/python.md) | 产物规格、workflow 参数、安装行为、组件来源与裁剪（默认裁 `Doc\`）、本地构建、设计约定 |

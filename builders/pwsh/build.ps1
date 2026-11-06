@@ -138,7 +138,19 @@ Write-Host "  Package            : $AssetFile"
 # 2. Download + extract
 # ---------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $CacheDir, $OutDir | Out-Null
-if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+# Wipe the previous stage tree, but strip reparse points first: Remove-Item
+# -Recurse follows directory links and would delete the link target's real
+# contents; Inno Setup's [Files] scanner also aborts on link cycles with an
+# unnumbered error (see doc/lessons.md 14).
+if (Test-Path $StageDir) {
+    $links = @(Get-ChildItem -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+    foreach ($l in $links) {
+        if ($l.PSIsContainer) { [IO.Directory]::Delete($l.FullName, $false) }
+        else { [IO.File]::Delete($l.FullName) }
+    }
+    Remove-Item -Recurse -Force $StageDir
+}
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 Write-Step 'Downloading PowerShell package'
@@ -173,13 +185,37 @@ if (-not (Test-Path $pwshExe)) {
 Write-Step 'Smoke testing staged pwsh.exe'
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
+
+# 1) The staged binary must report the exact packaged version.
 $verOut = (& $pwshExe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' 2>&1) -join "`n"
 $code = $LASTEXITCODE
-$ErrorActionPreference = $prevEap
 if ($code -ne 0 -or ($verOut.Trim() -ne $PwshVersion)) {
-    throw "Staged pwsh.exe version mismatch (expected '$PwshVersion'): $verOut"
+    throw "Smoke step 1/2 (version probe) failed (exit $code, expected '$PwshVersion'): $verOut"
 }
-Write-Host "  PowerShell $($verOut.Trim())"
+
+# 2) Script-execution probe: run a real pipeline/loop through -File-less
+#    -Command and assert its printed line. The payload uses single quotes
+#    only, because PS 5.1 strips embedded double quotes from native command
+#    arguments (see doc/lessons.md 28).
+$probeScript = @'
+$v = $PSVersionTable.PSVersion
+if ($PSVersionTable.PSEdition -ne 'Core') { throw ('unexpected PSEdition: ' + $PSVersionTable.PSEdition) }
+$sum = 0
+1..4 | ForEach-Object { $sum += $_ }
+('probe: {0}.{1}.{2} sum={3}' -f $v.Major, $v.Minor, $v.Patch, $sum)
+'@
+$probeOut = (& $pwshExe -NoProfile -NonInteractive -Command $probeScript 2>&1) -join "`n"
+$probeCode = $LASTEXITCODE
+$expectedProbe = "probe: $PwshVersion sum=10"
+
+$ErrorActionPreference = $prevEap
+if ($probeCode -ne 0) {
+    throw "Smoke step 2/2 (script-execution probe) failed (exit $probeCode): $probeOut"
+}
+if ($probeOut.Trim() -ne $expectedProbe) {
+    throw "Smoke step 2/2 (script-execution probe) output mismatch (expected '$expectedProbe'): $probeOut"
+}
+Write-Host "  PowerShell $($verOut.Trim()); script probe OK"
 
 # ---------------------------------------------------------------------------
 # 4. Compile installer

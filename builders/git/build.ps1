@@ -153,7 +153,19 @@ Write-Host "  Package     : $AssetDisplay"
 # 2. Download + extract
 # ---------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $CacheDir, $OutDir | Out-Null
-if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+# Wipe the previous stage tree, but strip reparse points first: Remove-Item
+# -Recurse follows directory links and would delete the link target's real
+# contents; Inno Setup's [Files] scanner also aborts on link cycles with an
+# unnumbered error (see doc/lessons.md 14).
+if (Test-Path $StageDir) {
+    $links = @(Get-ChildItem -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+    foreach ($l in $links) {
+        if ($l.PSIsContainer) { [IO.Directory]::Delete($l.FullName, $false) }
+        else { [IO.File]::Delete($l.FullName) }
+    }
+    Remove-Item -Recurse -Force $StageDir
+}
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 Write-Step 'Downloading Git package'

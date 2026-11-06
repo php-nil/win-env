@@ -78,6 +78,24 @@ $EnabledExtensions = @(
 # Extensions that must stay off even if a future php.ini-development ships them active.
 $DisabledExtensions = @('mysqli', 'pdo_mysql')
 
+# Upstream files removed from the staged tree after assembly (relative to the
+# install root; see doc/php-8.5.md §4.1 for the rationale and measurements).
+# Deliberately NOT trimmed: php-cgi.exe (FastCGI scenario entry point),
+# php-win.exe, license.txt and readme-redist-bins.txt (redistribution notices
+# of the bundled third-party DLLs), extras\ssl (openssl.cnf + legacy provider),
+# and every ext\*.dll so extensions disabled by default can be turned on later.
+$TrimPaths = @(
+    # Absent from the current 8.5.x package layout, but kept in the list so a
+    # reintroduced deploy\ (VC++ deployment helper scripts; we ship app-local
+    # CRT DLLs instead) is trimmed automatically.
+    'deploy',
+    'phpdbg.exe',
+    'php8phpdbg.dll',
+    'extras\sbom',
+    'README.md',
+    'news.txt'
+)
+
 function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
 function Get-LinkHrefs([string]$url) {
@@ -205,7 +223,19 @@ Write-Host "  APCu asset    : $ApcuAsset"
 # 2. Download
 # ---------------------------------------------------------------------------
 New-Item -ItemType Directory -Force -Path $CacheDir, $OutDir | Out-Null
-if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+# Wipe the previous stage tree, but strip reparse points first: Remove-Item
+# -Recurse follows directory links and would delete the link target's real
+# contents; Inno Setup's [Files] scanner also aborts on link cycles with an
+# unnumbered error (see doc/lessons.md 14).
+if (Test-Path $StageDir) {
+    $links = @(Get-ChildItem -LiteralPath $StageDir -Recurse -Force -ErrorAction SilentlyContinue |
+        Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+    foreach ($l in $links) {
+        if ($l.PSIsContainer) { [IO.Directory]::Delete($l.FullName, $false) }
+        else { [IO.File]::Delete($l.FullName) }
+    }
+    Remove-Item -Recurse -Force $StageDir
+}
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 Write-Step 'Downloading PHP binary package'
@@ -329,6 +359,34 @@ foreach ($dll in $VcRuntimeDlls) {
 Write-Host "  $($VcRuntimeDlls.Count) CRT DLLs staged (app-local, runtime $VcRedistVersion)"
 
 # ---------------------------------------------------------------------------
+# 3b. Trim upstream files that add bytes but no capability (the full zip is
+#     always extracted first, so upstream layout changes can never silently
+#     produce a partial tree; the trim list is explicit and measured).
+# ---------------------------------------------------------------------------
+Write-Step 'Trimming files not needed at runtime'
+$StageBytesBefore = (Get-ChildItem $StageDir -Recurse -File | Measure-Object Length -Sum).Sum
+$TrimmedBytes = 0
+foreach ($rel in $TrimPaths) {
+    $target = Join-Path $StageDir $rel
+    if (-not (Test-Path $target)) {
+        # Not an error: an upstream package may drop a file we used to trim.
+        Write-Host "  absent, skipped: $rel"
+        continue
+    }
+    $item = Get-Item $target
+    if ($item.PSIsContainer) {
+        $bytes = (Get-ChildItem $target -Recurse -File | Measure-Object Length -Sum).Sum
+    }
+    else { $bytes = $item.Length }
+    Remove-Item -Recurse -Force $target
+    $TrimmedBytes += $bytes
+    Write-Host ("  removed {0,-20} {1,10} bytes" -f $rel, $bytes)
+}
+$StageBytesAfter = (Get-ChildItem $StageDir -Recurse -File | Measure-Object Length -Sum).Sum
+Write-Host ("  trimmed {0} bytes total; staging {1:N2} MiB -> {2:N2} MiB" -f `
+    $TrimmedBytes, ($StageBytesBefore / 1MB), ($StageBytesAfter / 1MB))
+
+# ---------------------------------------------------------------------------
 # 4. Generate php.ini from php.ini-development
 # ---------------------------------------------------------------------------
 Write-Step 'Generating php.ini from php.ini-development'
@@ -444,7 +502,27 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText($iniPath, $ini, $utf8NoBom)
 
 # ---------------------------------------------------------------------------
-# 4b. Smoke test: the staged runtime must start, see Xdebug, and the bundled
+# 4b. Trim guard: every file the package promises must still be in the tree.
+# ---------------------------------------------------------------------------
+Write-Step 'Verifying required files survived the trim'
+$RequiredFiles = @(
+    'php.exe', 'php.ini', 'cacert.pem', 'composer.phar', 'nilpack.phar',
+    'ext\php_xdebug.dll', 'ext\php_apcu.dll'
+)
+foreach ($rel in $RequiredFiles) {
+    if (-not (Test-Path (Join-Path $StageDir $rel))) {
+        throw "Required file missing from the staged tree: $rel"
+    }
+}
+$crtCount = @($VcRuntimeDlls | Where-Object { Test-Path (Join-Path $StageDir $_) }).Count
+if ($crtCount -lt 1) { throw 'No app-local VC++ runtime DLL left in the staged tree' }
+if ($crtCount -ne $VcRuntimeDlls.Count) {
+    throw "Only $crtCount of $($VcRuntimeDlls.Count) VC++ runtime DLLs are present"
+}
+Write-Host "  required files present ($crtCount CRT DLLs)"
+
+# ---------------------------------------------------------------------------
+# 4c. Smoke test: the staged runtime must start, see Xdebug, and the bundled
 #     nilpack.phar must execute through php.exe.
 # ---------------------------------------------------------------------------
 Write-Step 'Smoke testing staged runtime'

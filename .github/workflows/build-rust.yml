@@ -1,10 +1,13 @@
 name: Build Rust MSVC
 
 on:
+  schedule:
+    # 每周五 02:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周四 18:00
+    - cron: '0 18 * * 4'
   workflow_dispatch:
     inputs:
       rust_version:
-        description: 'Exact Rust version without leading "v", e.g. 1.90.0. Leave empty for the latest stable release in the official channel TOML.'
+        description: 'Exact Rust version without leading "v", e.g. 1.99.1. Leave empty for the latest stable release in the official channel TOML.'
         required: false
         default: ''
       draft_release:
@@ -12,6 +15,11 @@ on:
         type: boolean
         required: false
         default: false
+
+# 定时与手动构建可能撞车；按环境串行化，避免互相覆盖 build/stage 与常青别名资产
+concurrency:
+  group: build-rust
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -44,6 +52,9 @@ jobs:
       - name: Build Rust installer
         id: build
         shell: powershell
+        env:
+          # xwin 的版本发现走 GitHub Releases API，显式注入 token 提高速率限额（见 lessons §8）
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           & .\builders\rust\build.ps1 -RustVersion '${{ inputs.rust_version }}'
 

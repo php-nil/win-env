@@ -1,7 +1,10 @@
 name: Build PHP 8.5
 
-# Manual build + auto release: Actions -> "Build PHP 8.5 (Windows)" -> Run workflow
+# Manual build + auto release: Actions -> "Build PHP 8.5" -> Run workflow
 on:
+  schedule:
+    # 每周一 02:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周日 18:00
+    - cron: '0 18 * * 0'
   workflow_dispatch:
     inputs:
       php_version:
@@ -17,6 +20,11 @@ on:
         type: boolean
         required: false
         default: false
+
+# 定时与手动构建可能撞车；按环境串行化，避免互相覆盖 build/stage 与常青别名资产
+concurrency:
+  group: build-php
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -54,7 +62,9 @@ jobs:
         id: build
         shell: powershell
         run: |
-          & .\builders\php\build.ps1 -PhpVersion '${{ inputs.php_version }}' -NilpackVersion '${{ inputs.nilpack_version }}'
+          # 定时触发时 inputs 为空：nilpack 无自动发现逻辑，空值会拼成 v/nilpack.phar（404），
+          # 故回落到 workflow 的手动默认值 0.2；手动指定时仍以指定值为准。
+          & .\builders\php\build.ps1 -PhpVersion '${{ inputs.php_version }}' -NilpackVersion '${{ inputs.nilpack_version || '0.2' }}'
 
       - name: Show build metadata
         shell: powershell

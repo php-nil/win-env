@@ -1,7 +1,10 @@
 name: Build pnpm
 
-# Manual build + auto release: Actions -> "Build pnpm (Windows)" -> Run workflow
+# Manual build + auto release: Actions -> "Build pnpm" -> Run workflow
 on:
+  schedule:
+    # 每周一 14:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周一 06:00
+    - cron: '0 6 * * 1'
   workflow_dispatch:
     inputs:
       pnpm_version:
@@ -17,6 +20,11 @@ on:
         type: boolean
         required: false
         default: false
+
+# 定时与手动构建可能撞车；按环境串行化，避免互相覆盖 build/stage 与常青别名资产
+concurrency:
+  group: build-pnpm
+  cancel-in-progress: false
 
 permissions:
   contents: write
