@@ -52,7 +52,7 @@
   - 卸载时**仅当该条目由本安装器新增**才回收（依据 `HKCU\Software\win-env\rust` 的记录值）；机器上若已装官方 rustup 并自带该条目，则保持不动。
 - **Cargo 链接器配置（"与官方一致"优先，安装时按环境决定）**：安装器在 `ssPostInstall` 探测系统是否已有可用的 MSVC 工具链——
   - **探测到**（系统存在 VS C++ 工具目录 `…\VC\Tools\MSVC`，且 Windows SDK 已注册）：**不写任何 cargo 配置**，与官方 rustup 行为一致，rustc 自行发现 `link.exe` 与 SDK 库路径；若此前在无 VS 机器上安装过并残留本段，安装时一并回收；
-  - **探测不到**：写 `%USERPROFILE%\.cargo\config.toml`，新增/替换 `[target.x86_64-pc-windows-msvc]` 段——`linker` 指向安装目录内 rustc 自带的 `lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe`（`{app}` 绝对路径，不依赖 PATH），`rustflags` 追加 `-L` 指向 `crt\lib\x86_64`、`sdk\lib\ucrt\x86_64`、`sdk\lib\um\x86_64` 三个库目录；
+  - **探测不到**：写 `%USERPROFILE%\.cargo\config.toml`，新增/替换 `[target.x86_64-pc-windows-msvc]` 段——`linker` 指向安装目录内 rustc 自带的 `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（`{app}` 绝对路径，不依赖 PATH；**不能**指向 `gcc-ld\lld-link.exe`，原因见 §6），`rustflags` 追加 `-L` 指向 `crt\lib\x86_64`、`sdk\lib\ucrt\x86_64`、`sdk\lib\um\x86_64` 三个库目录；
   - **段级合并**：文件已存在时只替换本段，保留用户其他配置；本段首行是标记注释 `# win-env: fallback linker config (removed on uninstall)`，卸载（以及装入有 VS 机器时的清理）**只删除带该标记的段**，用户手写的 `[target.x86_64-pc-windows-msvc]` 段一律不动；若文件仅剩空白则删除文件。
   - 探测规则**偏保守**：误判为"不可用"最多是多写一份可用的兜底配置（无害），误判为"可用"却实际不可用才会让用户构建失败，因此要求 VS C++ 工具目录与 SDK 注册**同时**成立。
 - 安装器固定 `AppId`（`{{7E3B9A2D-4C5F-4E8A-B1D6-9F0A3C7E2B51}`），重复安装/升级替换同一安装实例。
@@ -62,7 +62,7 @@
 | 组件 | 来源 | 取用内容 |
 | --- | --- | --- |
 | Rust 工具链 | <https://static.rust-lang.org/dist/channel-rust-stable.toml>（指定 `-RustVersion` 时改用该版本自己的 `channel-rust-<version>.toml`） | 版本、各组件精确 URL 与 **SHA-256**；下载 `rustc` / `cargo` / `rust-std` / `rust-docs` / `rustfmt-preview` / `clippy-preview` 的 `-x86_64-pc-windows-msvc.tar.gz`（即官方 `[profiles] default`），逐个校验后合并为暂存树（rustfmt / clippy 的**归档文件名**为 `rustfmt` / `clippy`，无 `-preview`，见 §6） |
-| LLD 链接器 | **rustc 组件自带**，无独立下载 | `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（真正的多 flavor 驱动）+ `gcc-ld\lld-link.exe`（按名分派的极小包装器，按相对路径拉起 `rust-lld`） |
+| LLD 链接器 | **rustc 组件自带**，无独立下载 | `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（多 flavor 通用驱动，`linker` 直接指向它；`gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe` 只是它的 flavor 包装器，本包不使用） |
 | Windows SDK / CRT | 微软官方 CDN（`https://aka.ms/vs/17/release`），经 [xwin](https://github.com/Jake-Shadle/xwin) 提取 | `crt\`（VC 头文件与 `msvcrt`/`vcruntime` 导入库）、`sdk\`（UCRT 与 Windows SDK 头文件/`kernel32` 等导入库） |
 | 版本发现 | GitHub API（xwin 最新 release） | 自动取最新 xwin 的 Windows MSVC `.tar.gz` 资产，避免硬编码版本被清理后 404 |
 | 安装器 | [Inno Setup 6](https://jrsoftware.org/isinfo.php) | GitHub windows runner 预装；缺失时 workflow 用 Chocolatey 兜底安装 |
@@ -106,8 +106,9 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - **下载完整性校验（强制）**：channel TOML 的每个 per-target 节都带 `hash = "<sha256>"`，`Download-File` 对**缓存命中**与**每次新下载**都做 SHA-256 校验，不一致/为空即删除重试（最多 3 次）。这堵住了"上次中断留下半截文件 → 后续每次构建都复用坏包"的静默失败；xwin 资产则取其同名 `.sha256` 资产（GitHub Release 提供）校验。
 - **组件名 ≠ 归档文件名**：channel 中 rustfmt / clippy 的组件名是 `rustfmt-preview` / `clippy-preview`，归档文件名却是 `rustfmt-<ver>-<target>.tar.gz` / `clippy-<ver>-<target>.tar.gz`（无 `-preview`）。现在**不再由组件名拼 URL**（URL 直接来自 channel TOML，`FileStem` 已删除），组件名只用于取 URL/哈希与匹配内层合并目录。实测内部布局：`rustfmt-preview/` 含 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`，`clippy-preview/` 含 `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`，`rust-docs/` 含 `share\doc\rust\html\`；三者的可执行文件都落在 `bin\`，与 `cargo.exe` 同处加入系统 PATH 的目录。
 - **官方 `default` profile 一个不少**：`[profiles] default = ["rustc", "cargo", "rust-std", "rust-mingw", "rust-docs", "rustfmt-preview", "clippy-preview"]`。其中 `rust-mingw` 在 channel 里**没有** `x86_64-pc-windows-msvc` 的 per-target 节（只有 gnu/gnullvm），rustup 在 MSVC 主机上同样装不上，故本包也不包含；`rust-docs` 有该节且属默认组件，此前漏装，现已补齐（离线文档落在 `share\doc\rust\html`），构建后强制断言该目录存在。
-- **只删确定无用的 PDB**：rustc 组件带 `gcc-ld\{ld.lld,ld64.lld,wasm-ld}.pdb` 与 `bin\wasm-component-ld.pdb`，这几个 flavor 本包永远不会调用（只跑 `lld-link`，且没有 rustup 就无法产出 ELF/Mach-O/wasm），组装阶段删除（1.99.1 为 4 个文件、19,906,560 字节 = 18.98 MiB 未压缩）。`rustc` / `rustdoc` / `lld-link` 的 PDB 与其余官方文件**全部保留**，ICE 回溯与链接器调试不受影响。
-- **LLD 不额外下载**：rustc 组件已内置 `rust-lld` 与其 `gcc-ld` 小小的 per-flavor 包装器，`linker` 指向 `gcc-ld\lld-link.exe` 即可；该包装器**按相对路径**定位 `rust-lld`，因此**必须保持组件原始相对布局**（不得把 `lld-link.exe` 单独搬到 `bin\`）。此前从 LLVM Release 下载并解压 `lld-link.exe` 的做法已移除。
+- **只删确定无用的 PDB**：rustc 组件带 `gcc-ld\{ld.lld,ld64.lld,wasm-ld}.pdb` 与 `bin\wasm-component-ld.pdb`，这几个 flavor 本包永远不会调用（只跑 COFF/link flavor，且没有 rustup 就无法产出 ELF/Mach-O/wasm），组装阶段删除（1.99.1 为 4 个文件、19,906,560 字节 = 18.98 MiB 未压缩）。`rustc` / `rustdoc` / `lld-link` 的 PDB 与其余官方文件**全部保留**，ICE 回溯与链接器调试不受影响。
+- **LLD 必须指向 `rust-lld.exe`，不能指向 `gcc-ld\lld-link.exe`（致命，CI 实测）**：rustc 会**按链接器文件名识别 LLD**，并自动在命令行最前面加 `-flavor link`；`gcc-ld\lld-link.exe` 包装器又会追加一份自己的 `-flavor link`，于是 `rust-lld` 收到两份——第一份被通用驱动消费后，第二份连同裸词 `link` 一起被转发给已选定的 COFF 驱动，得到 `rust-lld: warning: ignoring unknown argument '-flavor'` + `error: could not open 'link': no such file or directory; did you mean '/link'`，**任何 cargo 构建都链不上**（实测 `workflow_dispatch` run `42483684688` 即因此失败）。改为 `linker` 直接指向 `rust-lld.exe`（通用驱动从 `argv[1]` 正确消费 `-flavor link`）后本地复现即消失，仅剩"本机缺 SDK 库"的预期报错。构建期冒烟、`setup.iss` 兜底 config 与 `SdkLldPath` 三处必须一致。
+- **LLD 不额外下载**：rustc 组件已内置 `rust-lld` 与其 `gcc-ld` per-flavor 包装器，无需任何额外下载；同样因为上面的 `-flavor` 冲突，也不要把包装器搬到 `bin\` 或另行改名（包装器按自身文件名分派，改名会报 `lld-wrapper: executable has unexpected name`）。此前从 LLVM Release 下载并解压 `lld-link.exe` 的做法已移除。
 - **"与官方安装一致"优先**：官方 rustup 在 MSVC 下**不写任何 cargo 配置**、使用系统 VS 的 `link.exe`。本包只在系统确实没有可用 MSVC 工具链时才偏离这一默认（写 LLD + 内置 SDK 的兜底配置），有 VS 的机器上与官方行为一致。不能用 `-C link-self-contained=+linker` 这类官方机制"零配置启用内置 LLD"——该选项目前仅在 `x86_64-unknown-linux-gnu` 上稳定，Windows MSVC 目标不适用（见 [rustc codegen-options](https://doc.rust-lang.org/rustc/codegen-options/index.html)）。
 - 暂存目录（`build/stage/rust`）根目录即安装后的 `C:\pf\rust`。组件 tar.gz 内层多一层版本目录、再内层才是真正的组件目录，且**内层目录名并不统一**：`rustc-<ver>-<host>.tar.gz` / `cargo-...` 里是 `rustc/`、`cargo/`（等于组件名），`rust-std-<ver>-<host>.tar.gz` 里却是 **target 后缀名** `rust-std-<target>/`。按 `Join-Path <版本目录> 'rust-std'` 取会落空；一旦 fallback 成"整个版本目录"，载荷就被多套一层（std 落到 `<stage>\rust-std-<target>\lib\rustlib\<target>\lib`），而 rustc 的 sysroot 是 `bin\` 的父目录、期望 `<stage>\lib\rustlib\<target>\lib`，`cargo build` 于是报 `error[E0463]: can't find crate for 'std'`，还误导性地提示 `rustup target add …`（其实 rust-std 已合并）。因此解包后一律按"版本目录下唯一的子目录"通用取（优先匹配 `组件名` 或 `组件名-*`），合并后立即断言 `lib\rustlib\<target>\lib` 存在，把 E0463 提前成明确报错。
 - 下载缓存于 `build/cache`，重复构建不重复下载；下载失败自动重试 3 次。
@@ -117,11 +118,11 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - 组装完成有强制冒烟测试，任一失败即 throw，不产出坏包：
   1. 暂存 `rustc.exe --version` 必须与解析出的版本号逐字一致；
   2. 暂存 `cargo.exe --version` 退出码为 0；
-  3. 暂存 `lld-link.exe --version` 退出码为 0（就地调用即证明包装器能找到 `rust-lld` 子进程）；
+  3. 暂存 `rust-lld.exe -flavor link --version` 退出码为 0（按 rustc 的调用方式验证通用驱动的 flavor 分派）；
   4. `rustc -vV` 必须报 `host: x86_64-pc-windows-msvc`，`rustc --print sysroot` 必须**等于暂存树根**——排除 rustc 把 sysroot 解析到机器上别的工具链；
-  5. **真实 `cargo new` + `cargo build --release -v`**：用临时 `CARGO_HOME` 写指向内置 `lld-link` 与三个 SDK 库目录的 config，清空 `RUSTC` / `RUSTUP_*` 环境变量后构建一个二进制 crate，必须产出 `helloworld.exe`；
+  5. **真实 `cargo new` + `cargo build --release -v`**：用临时 `CARGO_HOME` 写指向内置 `rust-lld.exe` 与三个 SDK 库目录的 config，清空 `RUSTC` / `RUSTUP_*` 环境变量后构建一个二进制 crate，必须产出 `helloworld.exe`；
      - 冒烟 crate 的 `main.rs` 被替换为**真实调用 Win32 API** 的最小程序（`#[link(name = "iphlpapi")]` + `GetNumberOfInterfaces`）：`iphlpapi.lib` 不在 std 默认链接集里，能链上就证明 `sdk\lib\um\x86_64` 的 `-L` 路径确实生效（旧版只验"能编译"的 hello world，std 自带的默认依赖可能掩盖 UM 路径错误）；
-     - `-v` 的 rustc 命令行里必须出现暂存的 `gcc-ld\lld-link.exe`，否则说明 cargo 没吃到兜底 config（在有 VS 的 runner 上，配置被忽略也会"构建成功"，这条断言专门堵住这种假阳性）；
+     - `-v` 的 rustc 命令行里必须出现暂存的 `rust-lld.exe`，否则说明 cargo 没吃到兜底 config（在有 VS 的 runner 上，配置被忽略也会"构建成功"，这条断言专门堵住这种假阳性）；
      - 构建出的 exe 必须**实际运行**并以 0 退出、输出 `ifaces=<n>`。
   6. 暂存 `bin\rustfmt.exe --version` 退出码必须为 0，且 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`、`bin\cargo-clippy.exe`、`bin\clippy-driver.exe` 四个文件必须存在（合并布局错误在此提前暴露）。
   7. 在冒烟 crate 上真实执行 `cargo fmt --check` 与 `cargo clippy`：前者证明 `cargo-fmt` 能经 PATH 被 cargo 解析且代码通过格式检查，后者证明 clippy 能真实 lint 该 crate。任一失败即 throw。

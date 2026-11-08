@@ -32,11 +32,14 @@
 #ifndef SdkVcPath
   #define SdkVcPath "crt\\lib\\x86_64"
 #endif
-; LLD comes from the rustc component itself. The tiny `gcc-ld\lld-link.exe`
-; wrapper spawns `rust-lld.exe` located relative to its own directory, so cargo's
-; `linker` must point at this wrapper in its untouched install-tree position.
+; LLD comes from the rustc component itself. cargo's `linker` must point at the
+; rust-lld universal driver (NOT the gcc-ld\lld-link.exe wrapper): rustc spots
+; LLD by the linker file name and prepends "-flavor link" itself, so the wrapper
+; would add a second "-flavor link" and the COFF driver would then treat the bare
+; word "link" as an input file ("could not open 'link'"). rust-lld consumes
+; "-flavor link" from argv[1] correctly.
 #ifndef SdkLldPath
-  #define SdkLldPath "lib\\rustlib\\x86_64-pc-windows-msvc\\bin\\gcc-ld\\lld-link.exe"
+  #define SdkLldPath "lib\\rustlib\\x86_64-pc-windows-msvc\\bin\\rust-lld.exe"
 #endif
 
 [Setup]
@@ -409,7 +412,7 @@ end;
 
 // Reverse of PatchCargoConfig: strip our target section so the uninstalled
 // linker/library paths do not linger and break the user's later `cargo build`
-// (a leftover section pointing at a removed `lld-link.exe` fails the link).
+// (a leftover section pointing at a removed `rust-lld.exe` fails the link).
 // Other sections the user may have in config.toml are preserved; if nothing
 // but whitespace remains, the file was ours and is deleted.
 procedure UnpatchCargoConfig;
@@ -579,7 +582,7 @@ begin
   begin
     Log('System MSVC toolchain detected - cargo config left untouched (official defaults)');
     // A previous install on a VS-less machine may have left our section behind,
-    // pointing at a now-removed lld-link.exe. Clear it so the official link.exe
+    // pointing at a now-removed rust-lld.exe. Clear it so the official link.exe
     // path is used without a stale override.
     UnpatchCargoConfig;
   end

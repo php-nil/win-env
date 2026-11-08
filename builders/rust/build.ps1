@@ -10,8 +10,9 @@
       rust-std / rust-docs / rustfmt-preview / clippy-preview) for
       x86_64-pc-windows-msvc and verifies every archive against the SHA-256
       published in the channel TOML before using it.
-    - Uses the LLD linker bundled inside the rustc component (rust-lld plus
-      its gcc-ld/lld-link wrapper) — no separate LLVM download.
+    - Uses the LLD linker bundled inside the rustc component (the rust-lld
+      universal driver; the gcc-ld flavor wrappers are not used) — no separate
+      LLVM download.
     - Downloads xwin and extracts Windows SDK / CRT headers and libraries.
     - Stages a unified tree at build/stage/rust (equals C:\pf\rust after install).
     - Runs mandatory smoke test: staged rustc/cargo/rustfmt must report exact
@@ -54,8 +55,8 @@ $ChannelUrl = 'https://static.rust-lang.org/dist/channel-rust-stable.toml'
 $Target     = 'x86_64-pc-windows-msvc'
 
 # LLD comes from the rustc component itself (no LLVM download): rustc ships a
-# self-contained LLD whose real driver is rust-lld.exe plus tiny per-flavor
-# wrappers, one of which is named lld-link.exe. See section 4 below.
+# self-contained LLD whose universal driver is rust-lld.exe (the gcc-ld\*.exe
+# files are per-flavor wrappers around it). See section 4 below.
 
 # xwin release to pull SDK extraction tool from.
 # Auto-discover latest from GitHub API; avoids hardcoding a version that may
@@ -349,27 +350,29 @@ if ($prunedPdbCount -ne $deadPdb.Count) {
 
 # ---------------------------------------------------------------------------
 # 4. Locate the LLD linker bundled with the rustc component
-#    rustc ships a self-contained LLD: the real multi-flavor driver at
+#    rustc ships a self-contained LLD at
 #      lib\rustlib\<target>\bin\rust-lld.exe
-#    plus tiny per-flavor wrappers at
-#      lib\rustlib\<target>\bin\gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe
-#    The `lld-link` wrapper finds `rust-lld` relative to its OWN directory:
-#    verified locally that it runs in place in this exact layout and fails with
-#    "lld-wrapper: error running rust-lld child process: os error 2" once moved
-#    away from it. So the shipped relative layout MUST stay intact — cargo's
-#    `linker` is pointed straight at the wrapper, nothing is copied to bin\.
+#    (the universal driver; gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe are
+#    thin flavor wrappers around it).
+#
+#    The linker configured for cargo MUST be rust-lld.exe, NOT gcc-ld\lld-link.exe.
+#    rustc detects LLD by the linker file name and prepends "-flavor link" itself;
+#    the gcc-ld wrapper prepends its own "-flavor link" on top of the caller's
+#    arguments, so rust-lld receives the flavor twice. The second pair is then
+#    forwarded to the already-selected COFF driver, which warns
+#    "ignoring unknown argument '-flavor'" and treats the bare word "link" as an
+#    input file ("could not open 'link'"). Pointing at the universal driver is the
+#    one layout where rustc's "-flavor link" (argv[1]) is consumed correctly.
+#    Verified locally with rustc 1.99.1: wrapper => link failure, driver => OK.
 #    This removes the former LLVM download, the 7-Zip dependency and the
 #    hardcoded LLVM version, and keeps LLD version-aligned with rustc.
 # ---------------------------------------------------------------------------
-Write-Step 'Locating bundled LLD (rust-lld driver + gcc-ld/lld-link wrapper)'
+Write-Step 'Locating bundled LLD (rust-lld universal driver)'
 $rustLldDir = Join-Path $StageDir "lib\rustlib\$Target\bin"
-$rustLld    = Join-Path $rustLldDir 'rust-lld.exe'          # real driver
-$lldLink    = Join-Path $rustLldDir 'gcc-ld\lld-link.exe'   # flavor wrapper
+$rustLld    = Join-Path $rustLldDir 'rust-lld.exe'
 if (-not (Test-Path $rustLld)) { throw "Bundled rust-lld driver missing: $rustLld" }
-if (-not (Test-Path $lldLink)) { throw "Bundled lld-link wrapper missing: $lldLink" }
-$lldRel = $lldLink.Substring($StageDir.Length).TrimStart('\')
-Write-Host "  rust-lld : $($rustLld.Substring($StageDir.Length).TrimStart('\'))"
-Write-Host "  lld-link : $lldRel"
+$rustLldRel = $rustLld.Substring($StageDir.Length).TrimStart('\')
+Write-Host "  rust-lld : $rustLldRel"
 
 # ---------------------------------------------------------------------------
 # 5. Extract Windows SDK via xwin
@@ -456,7 +459,7 @@ if ($left.Count) {
 # ---------------------------------------------------------------------------
 # 6. Smoke test (mandatory)
 # ---------------------------------------------------------------------------
-Write-Step 'Smoke testing staged rustc / cargo / lld-link'
+Write-Step 'Smoke testing staged rustc / cargo / rust-lld'
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 
@@ -464,10 +467,10 @@ $rustcOut = (& $rustcExe --version 2>&1) -join "`n"
 $rustcCode = $LASTEXITCODE
 $cargoOut = (& $cargoExe --version 2>&1) -join "`n"
 $cargoCode = $LASTEXITCODE
-# The lld-link wrapper must be exercised from its real location: it spawns the
-# rust-lld driver found relative to itself, so calling the staged wrapper in
-# place also proves the bundled driver is discoverable post-install.
-$lldOut = (& $lldLink --version 2>&1) -join "`n"
+# Exercise the driver exactly the way rustc will: the universal driver needs its
+# flavor as argv[1] ("-flavor link"), which is also what proves the file is the
+# multi-flavor rust-lld and not a single-flavor binary.
+$lldOut = (& $rustLld -flavor link --version 2>&1) -join "`n"
 $lldCode = $LASTEXITCODE
 # The staged formatter must run on its own too (it is its own binary, not a
 # cargo shim): proves bin\rustfmt.exe was merged and is executable.
@@ -487,7 +490,7 @@ if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersionRe") {
     throw "rustc version mismatch (expected $rustVersion): $rustcOut"
 }
 if ($cargoCode -ne 0) { throw "cargo failed: $cargoOut" }
-if ($lldCode -ne 0) { throw "lld-link failed: $lldOut" }
+if ($lldCode -ne 0) { throw "rust-lld failed: $lldOut" }
 if ($rustfmtCode -ne 0) { throw "rustfmt failed: $rustfmtOut" }
 if ($rustcVvCode -ne 0 -or $rustcVvOut -notmatch ('(?m)^host: ' + [regex]::Escape($Target) + '$')) {
     throw "rustc -vV does not report host $Target :`n$rustcVvOut"
@@ -500,14 +503,14 @@ if ($sysrootPath.TrimEnd('\') -ne $StageDir.TrimEnd('\')) {
 $lldVer = if ($lldOut -match 'LLD (\S+)') { $Matches[1] } else { 'unknown' }
 Write-Host "  $rustcOut"
 Write-Host "  $cargoOut"
-Write-Host "  lld-link $lldOut"
+Write-Host "  rust-lld $lldOut"
 Write-Host "  $rustfmtOut"
 
 # ---------------------------------------------------------------------------
 # 6b. Locate SDK library paths (relative to install root = StageDir).
 #     All three lib dirs are required for linking: rustc std for
 #     x86_64-pc-windows-msvc needs msvcrt/vcruntime (crt), ucrt (sdk\lib\ucrt)
-#     and kernel32/ws2_32/bcrypt (sdk\lib\um). Missing vc dir means lld-link
+#     and kernel32/ws2_32/bcrypt (sdk\lib\um). Missing vc dir means the linker
 #     fails with unresolved symbols like __CxxFrameHandler3.
 # ---------------------------------------------------------------------------
 function Find-SdkLibDir([string]$directRel, [string]$fallbackRe) {
@@ -554,13 +557,13 @@ $rustflagsLines = @(
 )
 $rustflagsToml = ($rustflagsLines -join ",`n")
 
-# Write a temporary cargo config that points to the bundled lld-link wrapper
-# (absolute path — the wrapper resolves its rust-lld sibling relative to
-# itself) plus the SDK lib dirs. TOML literal strings (single quotes) keep
-# Windows backslashes unescaped.
+# Write a temporary cargo config that points at the bundled rust-lld driver
+# (absolute path; see section 4 for why the universal driver is used instead of
+# the gcc-ld wrapper) plus the SDK lib dirs. TOML literal strings (single
+# quotes) keep Windows backslashes unescaped.
 $smokeCfg = @"
 [target.x86_64-pc-windows-msvc]
-linker = '$lldLink'
+linker = '$rustLld'
 rustflags = [
 $rustflagsToml
 ]
@@ -594,7 +597,7 @@ try {
 
     # Replace the generated hello-world with a crate that calls a Win32 API
     # through an import library std never links (iphlpapi.lib). The explicit
-    # `#[link]` forces lld-link to resolve it from the staged sdk\lib\um dir, so
+    # `#[link]` forces the linker to resolve it from the staged sdk\lib\um dir, so
     # a wrong/missing UM lib path fails HERE instead of in the user's first
     # project. The source is rustfmt-clean because `cargo fmt --check` runs below.
     $mainRs = @'
@@ -622,12 +625,12 @@ fn main() {
         }
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
-        # -v echoes rustc's command line; it must carry OUR wrapper as the
+        # -v echoes rustc's command line; it must carry OUR rust-lld as the
         # linker. This is the only check that proves the CARGO_HOME config was
         # applied (cargo silently ignoring it would still link on a runner that
         # happens to have Visual Studio installed).
-        if (($buildLog -join "`n") -notmatch [regex]::Escape($lldLink)) {
-            throw "cargo did not pass the bundled lld-link to rustc (cargo config not applied): $lldLink"
+        if (($buildLog -join "`n") -notmatch [regex]::Escape($rustLld)) {
+            throw "cargo did not pass the bundled rust-lld to rustc (cargo config not applied): $rustLld"
         }
     }
     finally { Pop-Location }
@@ -702,7 +705,7 @@ if (-not $SkipCompile) {
         "/DSdkUcrtPath=$ucrtRel" `
         "/DSdkUmPath=$umRel" `
         "/DSdkVcPath=$vcRel" `
-        "/DSdkLldPath=$lldRel"
+        "/DSdkLldPath=$rustLldRel"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 }
 else {
@@ -722,7 +725,7 @@ $buildInfo = [ordered]@{
     componentUrls   = @($components | ForEach-Object { $_.Url })
     componentHashes = @($components | ForEach-Object { $_.Sha256 })
     lldVersion      = $lldVer
-    lldSource       = 'rustc component (bundled rust-lld, via gcc-ld/lld-link.exe)'
+    lldSource       = 'rustc component (bundled rust-lld universal driver)'
     xwinVersion     = $XwinVersion
     xwinSource      = 'https://github.com/Jake-Shadle/xwin'
     sdkSource       = 'Microsoft official CDN (extracted via xwin)'
@@ -757,7 +760,7 @@ if (-not $SkipCompile) {
 | rustfmt | 随 Rust $rustVersion（官方 rustfmt-preview 组件，含 cargo-fmt） |
 | clippy | 随 Rust $rustVersion（官方 clippy-preview 组件，含 clippy-driver） |
 | 目标 | x86_64-pc-windows-msvc |
-| LLD | $lldVer（rustc 官方组件内置 rust-lld，经 ``gcc-ld\lld-link.exe`` 封装） |
+| LLD | $lldVer（rustc 官方组件内置 rust-lld 通用驱动，经 ``-flavor link`` 运行） |
 | xwin | $XwinVersion（提取 Windows SDK / CRT） |
 
 ## 默认行为
