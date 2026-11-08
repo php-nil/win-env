@@ -27,7 +27,7 @@
 ; Every association registry entry is gated on this task list (Inno processes
 ; the entry if ANY listed task is selected), so nothing is written when the
 ; user unchecks all file types.
-#define AssocTasks "assoc_txt assoc_log assoc_ini assoc_md assoc_json assoc_xml assoc_yml assoc_yaml assoc_csv assoc_bat assoc_cmd assoc_ps1"
+#define AssocTasks "assoc_txt assoc_log assoc_ini assoc_md assoc_json assoc_xml assoc_yml assoc_yaml assoc_toml assoc_csv"
 
 [Setup]
 ; A fixed AppId makes upgrades/reinstalls replace the same installation.
@@ -65,8 +65,8 @@ Name: "chinesesimp"; MessagesFile: "{#LangDir}ChineseSimplified.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-; Desktop shortcut is opt-in; the Start menu entry is always created.
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"; Flags: unchecked
+; Both shortcuts (Start menu and desktop) are created unconditionally in
+; [Icons], following the repo convention of builders/git and builders/chromium.
 ; File types are only registered as "Open with" candidates - never as the
 ; default program (see doc/notepad3.md).
 Name: "assoc_txt";  Description: ".txt · 纯文本";  GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
@@ -77,10 +77,8 @@ Name: "assoc_json"; Description: ".json";          GroupDescription: "将 Notepa
 Name: "assoc_xml";  Description: ".xml";           GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
 Name: "assoc_yml";  Description: ".yml";           GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
 Name: "assoc_yaml"; Description: ".yaml";          GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
+Name: "assoc_toml"; Description: ".toml";          GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
 Name: "assoc_csv";  Description: ".csv";           GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"
-Name: "assoc_bat";  Description: ".bat · 批处理（默认不勾选）"; GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"; Flags: unchecked
-Name: "assoc_cmd";  Description: ".cmd · 批处理（默认不勾选）"; GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"; Flags: unchecked
-Name: "assoc_ps1";  Description: ".ps1 · PowerShell 脚本（默认不勾选）"; GroupDescription: "将 Notepad3 加入以下文件类型的「打开方式」列表（不会改变默认程序）:"; Flags: unchecked
 ; Offers the Default Apps settings page after install; the association cannot
 ; be made default silently (UserChoice hash + Windows 11 UCPD).
 Name: "opendefaultapps"; Description: "安装完成后打开 Windows「默认应用」设置页，由我手动确认一次设为默认"; GroupDescription: "安装完成后:"
@@ -102,7 +100,7 @@ Name: "{app}\Favorites"
 
 [Icons]
 Name: "{group}\Notepad3"; Filename: "{app}\Notepad3.exe"; WorkingDir: "{app}"; Comment: "Notepad3 文本编辑器"
-Name: "{commondesktop}\Notepad3"; Filename: "{app}\Notepad3.exe"; WorkingDir: "{app}"; Comment: "Notepad3 文本编辑器"; Tasks: desktopicon
+Name: "{commondesktop}\Notepad3"; Filename: "{app}\Notepad3.exe"; WorkingDir: "{app}"; Comment: "Notepad3 文本编辑器"
 
 [Registry]
 ; ---- Application registration --------------------------------------------
@@ -121,10 +119,8 @@ Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes";
 Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".xml";  ValueData: ""; Tasks: assoc_xml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".yml";  ValueData: ""; Tasks: assoc_yml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".yaml"; ValueData: ""; Tasks: assoc_yaml; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".toml"; ValueData: ""; Tasks: assoc_toml; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".csv";  ValueData: ""; Tasks: assoc_csv;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".bat";  ValueData: ""; Tasks: assoc_bat;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".cmd";  ValueData: ""; Tasks: assoc_cmd;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\Applications\Notepad3.exe\SupportedTypes"; ValueType: string; ValueName: ".ps1";  ValueData: ""; Tasks: assoc_ps1;  Flags: uninsdeletevalue
 
 ; ---- OpenWithProgids (REG_NONE values on the extension keys) -------------
 ; "none" is Inno's REG_NONE: a value name with no data, which is exactly what
@@ -138,10 +134,8 @@ Root: HKLM; Subkey: "SOFTWARE\Classes\.json\OpenWithProgids"; ValueType: none; V
 Root: HKLM; Subkey: "SOFTWARE\Classes\.xml\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_xml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\.yml\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_yml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\.yaml\OpenWithProgids"; ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_yaml; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\Classes\.toml\OpenWithProgids"; ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_toml; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\Classes\.csv\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_csv;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\.bat\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_bat;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\.cmd\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_cmd;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\Classes\.ps1\OpenWithProgids";  ValueType: none; ValueName: "Applications\Notepad3.exe"; Tasks: assoc_ps1;  Flags: uninsdeletevalue
 
 ; ---- Default Apps registration (machine-wide capability declaration) -----
 ; The value name below must stay "Notepad3": the ms-settings deep link uses
@@ -158,10 +152,8 @@ Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; V
 Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".xml";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_xml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".yml";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_yml;  Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".yaml"; ValueData: "Applications\Notepad3.exe"; Tasks: assoc_yaml; Flags: uninsdeletevalue
+Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".toml"; ValueData: "Applications\Notepad3.exe"; Tasks: assoc_toml; Flags: uninsdeletevalue
 Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".csv";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_csv;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".bat";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_bat;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".cmd";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_cmd;  Flags: uninsdeletevalue
-Root: HKLM; Subkey: "SOFTWARE\win-env\Notepad3\Capabilities\FileAssociations"; ValueType: string; ValueName: ".ps1";  ValueData: "Applications\Notepad3.exe"; Tasks: assoc_ps1;  Flags: uninsdeletevalue
 
 ; Deliberately NOT touched anywhere in this script: HKCU\...\UserChoice, the
 ; default value of HKCR\.<ext>, txtfile, and Applications\notepad.exe / IFEO.
@@ -212,10 +204,8 @@ begin
     WizardIsTaskSelected('assoc_xml') or
     WizardIsTaskSelected('assoc_yml') or
     WizardIsTaskSelected('assoc_yaml') or
-    WizardIsTaskSelected('assoc_csv') or
-    WizardIsTaskSelected('assoc_bat') or
-    WizardIsTaskSelected('assoc_cmd') or
-    WizardIsTaskSelected('assoc_ps1');
+    WizardIsTaskSelected('assoc_toml') or
+    WizardIsTaskSelected('assoc_csv');
 end;
 
 function NormalizePathEntry(const P: String): String;
