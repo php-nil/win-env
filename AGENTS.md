@@ -6,7 +6,7 @@
 
 * **项目名称**：win-env
 * **核心定位**：自动打包 Windows 常用开发环境。GitHub Actions **手动 + 每周错峰定时**触发构建 → 自动发布 GitHub Release → 交付物为基于 Inno Setup 6 的**一键安装包（.exe）**。
-* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、APCu、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)；Rust MSVC（stable channel，x86_64-pc-windows-msvc，默认 `C:\pf\rust`，内置 LLD 链接器与 Windows SDK/CRT），详见 [doc/rust.md](doc/rust.md)；PostgreSQL（EDB 官方 binaries zip，x64，默认 `C:\pf\postgres-<major>`，含 `pg-start`/`pg-stop`/`pg-restart`/`pg-status` 管理脚本），详见 [doc/postgres.md](doc/postgres.md)；Chromium（ungoogled-chromium 官方便携包，x64，默认 `C:\pf\chromium`，含桌面快捷方式），详见 [doc/chromium.md](doc/chromium.md)；Python（python.org 官方 `python-<ver>-amd64.zip` pythoncore 可重定位布局，x64，默认 `C:\pf\python`，内置 pip/venv/tkinter，默认裁剪 `Doc\`），详见 [doc/python.md](doc/python.md)。
+* **当前环境**：PHP 8.5（NTS / VS17 / x64，含 Xdebug、APCu、cacert.pem、nilpack、Composer、app-local VC++ 运行库），详见 [doc/php-8.5.md](doc/php-8.5.md)；pnpm 12（standalone `pnpm.exe`，默认 `C:\pf\pnpm`），详见 [doc/pnpm.md](doc/pnpm.md)；Git v2.x.windows.y（PortableGit，默认 `C:\pf\Git`），详见 [doc/git.md](doc/git.md)；PowerShell 7（v7.6.x · x64，默认 `C:\pf\PowerShell7`，内置右键菜单与 Windows Terminal 配置档），详见 [doc/pwsh.md](doc/pwsh.md)；Node.js LTS（官方 dist zip，默认 `C:\pf\node`，内置 npm），详见 [doc/node.md](doc/node.md)；Rust MSVC（stable channel，x86_64-pc-windows-msvc，默认 `C:\pf\rust`，内置 LLD 链接器与 Windows SDK/CRT），详见 [doc/rust.md](doc/rust.md)；PostgreSQL（EDB 官方 binaries zip，x64，默认 `C:\pf\postgres-<major>`，含 `pg-start`/`pg-stop`/`pg-restart`/`pg-status` 管理脚本），详见 [doc/postgres.md](doc/postgres.md)；Chromium（ungoogled-chromium 官方便携包，x64，默认 `C:\pf\chromium`，含桌面快捷方式），详见 [doc/chromium.md](doc/chromium.md)；Python（python.org 官方 `python-<ver>-amd64.zip` pythoncore 可重定位布局，x64，默认 `C:\pf\python`，内置 pip/venv/tkinter，默认裁剪 `Doc\`），详见 [doc/python.md](doc/python.md)；Notepad3（x64 便携文本编辑器，默认 `C:\pf\Notepad3`，只保留中英文语言包，文件关联仅注册为"打开方式"候选、不碰 `notepad.exe`），详见 [doc/notepad3.md](doc/notepad3.md)。
 
 ## 二、仓库结构
 
@@ -43,6 +43,7 @@
   | postgres | `0 18 * * 5` | 周六 02:00 |
   | chromium | `0 6 * * 6` | 周六 14:00 |
   | python | `0 18 * * 6` | 周日 02:00 |
+  | notepad3 | `0 6 * * 0` | 周日 14:00 |
 
 * **定时触发的输入必须留空即安全**：`schedule` 不携带 inputs（`inputs.*` 为空而非 input 的 `default`），所有 input 必须 `required: false`，且空值要落到"自动发现官方最新版本"的路径；会锁死旧版本或产生非预期行为的默认值须改成安全回落（如 PHP 的 `nilpack_version` 空值回落 `0.2`）。
 * **GitHub schedule 的运维事实**：定时只在**默认分支**的 workflow 文件上生效；仓库连续 **60 天无提交活动**后，schedule 会被 GitHub **自动停用**（重新有提交/手动触发后才会恢复）。
@@ -111,6 +112,7 @@
 | PostgreSQL 打包文档 | [doc/postgres.md](doc/postgres.md) | 产物规格、workflow 参数、安装行为（含管理脚本）、组件来源与裁剪、本地构建、设计约定 |
 | Chromium 打包文档 | [doc/chromium.md](doc/chromium.md) | 产物规格、workflow 参数、安装行为（桌面快捷方式/PATH）、组件来源与镜像用法、本地构建、设计约定 |
 | Python 打包文档 | [doc/python.md](doc/python.md) | 产物规格、workflow 参数、安装行为、组件来源与裁剪（默认裁 `Doc\`）、本地构建、设计约定 |
+| Notepad3 打包文档 | [doc/notepad3.md](doc/notepad3.md) | 产物规格、workflow 参数、安装行为（PATH/快捷方式/"打开方式"注册与设置页跳转）、组件来源与裁剪（语言包只留中英）、本地构建、设计约定 |
 | OpenCV shim 构建说明 | [doc/opencv-msvc.md](doc/opencv-msvc.md) | gnu（默认交付）/ msvc（备选）两条路线的技术依据、旗标、验证闸门与已验证的坑 |
 | 体积优化评估 | [doc/compression.md](doc/compression.md) | 安装包压缩参数与内容的实测评估：Inno 侧已到顶、可选杠杆与代价（仅评估，未落地） |
 | 经验教训（跨环境通用） | [doc/lessons.md](doc/lessons.md) | 只收跨环境通用条目（PowerShell 5.1 / ISCC / 原生命令 / 网络等）；单场景坑见对应环境文档，编号映射见文末"附录 A" |

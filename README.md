@@ -15,6 +15,7 @@
 | PostgreSQL | 18.x · x64 · 命令行为主（含 `pg-start`/`pg-stop` 管理脚本） | [GitHub](https://github.com/php-nil/win-env/releases/download/postgres-latest/postgres-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/postgres-latest/postgres-setup-x64.exe) |
 | Chromium (ungoogled) | 155.x · x64 · 便携版 · 含桌面快捷方式 | [GitHub](https://github.com/php-nil/win-env/releases/download/chromium-latest/chromium-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/chromium-latest/chromium-setup-x64.exe) |
 | Python | 3.15.x · x64 · 内置 pip/venv/tkinter | [GitHub](https://github.com/php-nil/win-env/releases/download/python-latest/python-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/python-latest/python-setup-x64.exe) |
+| Notepad3 | 7.26.x · x64 · 便携文本编辑器 · 仅含中英语言包 | [GitHub](https://github.com/php-nil/win-env/releases/download/notepad3-latest/notepad3-setup-x64.exe) · [代理](https://gh-proxy.com/https://github.com/php-nil/win-env/releases/download/notepad3-latest/notepad3-setup-x64.exe) |
 
 > 下载地址为各环境的**常青别名**（tag `<env>-latest`，资产名固定 `<env>-setup-x64.exe`）：每次构建原地覆盖，链接永不随版本号失效，始终指向该环境最新一次构建。带版本号的历史发布（含发布说明、SHA-256、`build-info.json`）见 [Releases](https://github.com/php-nil/win-env/releases)。
 

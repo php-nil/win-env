@@ -1,0 +1,108 @@
+name: Build Notepad3
+
+on:
+  schedule:
+    # 每周日 14:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周日 06:00
+    - cron: '0 6 * * 0'
+  workflow_dispatch:
+    inputs:
+      notepad3_version:
+        description: 'Exact Notepad3 version without the RELEASE_ prefix, e.g. 7.26.602.1. Leave empty for the latest stable release carrying Notepad3_<version>_x64_Portable.zip.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+# 定时与手动构建可能撞车；按环境串行化，避免互相覆盖 build/stage 与常青别名资产
+concurrency:
+  group: build-notepad3
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build Notepad3 installer
+        id: build
+        shell: powershell
+        env:
+          # build.ps1 的 GitHub Releases API 版本发现需要 GITHUB_TOKEN 提高速率限额
+          # （匿名 60 req/h → 认证 1000 req/h）。此处显式注入，防止 PowerShell
+          # 进程未继承 job-level 的自动注入。
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\builders\notepad3\build.ps1 -Notepad3Version '${{ inputs.notepad3_version }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "Notepad3 version = ${{ steps.build.outputs.notepad3_version }}"
+          Write-Host "Installer        = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: notepad3-${{ steps.build.outputs.notepad3_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Check versioned release
+        id: rel
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\test-release-published.ps1 -Tag 'notepad3-${{ steps.build.outputs.notepad3_version }}'
+
+      - name: Publish GitHub release
+        if: steps.rel.outputs.published != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: notepad3-${{ steps.build.outputs.notepad3_version }}
+          name: 'Notepad3 ${{ steps.build.outputs.notepad3_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+
+      - name: Publish evergreen alias release
+        if: ${{ !inputs.draft_release }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\publish-alias-release.ps1 -Env 'notepad3' -Version '${{ steps.build.outputs.notepad3_version }}' -AssetPath 'build/output/${{ steps.build.outputs.setup_name }}' -VersionedTag 'notepad3-${{ steps.build.outputs.notepad3_version }}' -DisplayName 'Notepad3'
