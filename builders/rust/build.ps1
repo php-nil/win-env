@@ -4,8 +4,12 @@
 
 .DESCRIPTION
     - Resolves the latest stable Rust release via channel-rust-stable.toml
-      (no hardcoded patch versions). Optionally pinned to an exact version.
-    - Downloads rustc/cargo/rust-std/rustfmt/clippy for x86_64-pc-windows-msvc.
+      (no hardcoded patch versions). A pinned version is resolved from its own
+      immutable channel-rust-<version>.toml, never by rewriting stable URLs.
+    - Downloads the official `default` profile components (rustc / cargo /
+      rust-std / rust-docs / rustfmt-preview / clippy-preview) for
+      x86_64-pc-windows-msvc and verifies every archive against the SHA-256
+      published in the channel TOML before using it.
     - Uses the LLD linker bundled inside the rustc component (rust-lld plus
       its gcc-ld/lld-link wrapper) — no separate LLVM download.
     - Downloads xwin and extracts Windows SDK / CRT headers and libraries.
@@ -56,19 +60,31 @@ $Target     = 'x86_64-pc-windows-msvc'
 # xwin release to pull SDK extraction tool from.
 # Auto-discover latest from GitHub API; avoids hardcoding a version that may
 # get removed (old tags get pruned). Download the .tar.gz Windows MSVC build.
+# The GitHub API requires a User-Agent and rate-limits anonymous calls to 60/h
+# per IP; shared runner IPs routinely get 403. GITHUB_TOKEN (supplied by the
+# workflow) is only used to raise that limit — it is never logged.
 Write-Host 'Discovering latest xwin release...'
 try {
-    $xwinLatest = Invoke-RestMethod -UseBasicParsing `
+    $ghHeaders = @{ 'User-Agent' = 'win-env-rust-builder' }
+    if ($env:GITHUB_TOKEN) { $ghHeaders['Authorization'] = "Bearer $env:GITHUB_TOKEN" }
+    $xwinLatest = Invoke-RestMethod -UseBasicParsing -Headers $ghHeaders `
         -Uri 'https://api.github.com/repos/Jake-Shadle/xwin/releases/latest'
     $XwinVersion = $xwinLatest.tag_name
-    $XwinAsset = ($xwinLatest.assets | Where-Object {
+    $xwinAssetObj = $xwinLatest.assets | Where-Object {
         $_.name -match 'x86_64-pc-windows-msvc\.tar\.gz$'
-    } | Select-Object -First 1).name
-    $XwinUrl = ($xwinLatest.assets | Where-Object {
-        $_.name -eq $XwinAsset
-    } | Select-Object -First 1).browser_download_url
-    if (-not $XwinUrl) { throw 'No Windows MSVC tar.gz asset found' }
-    Write-Host "  xwin $XwinVersion => $XwinAsset"
+    } | Select-Object -First 1
+    if (-not $xwinAssetObj) { throw 'No Windows MSVC tar.gz asset found' }
+    $XwinAsset = $xwinAssetObj.name
+    $XwinUrl   = $xwinAssetObj.browser_download_url
+    # Every xwin asset ships a sibling "<asset>.sha256" containing the digest.
+    $xwinShaObj = $xwinLatest.assets | Where-Object { $_.name -eq "$XwinAsset.sha256" } | Select-Object -First 1
+    $XwinSha256 = $null
+    if ($xwinShaObj) {
+        $rawSha = [string](Invoke-RestMethod -UseBasicParsing -Headers $ghHeaders -Uri $xwinShaObj.browser_download_url)
+        $XwinSha256 = (($rawSha.Trim() -split '\s+')[0]).ToLower()
+        if ($XwinSha256 -notmatch '^[0-9a-f]{64}$') { throw "Unexpected .sha256 asset payload: $rawSha" }
+    }
+    Write-Host "  xwin $XwinVersion => $XwinAsset (sha256 published: $([bool]$XwinSha256))"
 }
 catch {
     throw "Failed to discover xwin latest release: $_"
@@ -76,20 +92,37 @@ catch {
 
 function Write-Step([string]$msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
 
-function Download-File([string]$url, [string]$dest) {
+function Test-FileSha256([string]$Path, [string]$Sha256) {
+    if (-not $Sha256) { return $true }
+    if (-not (Test-Path $Path)) { return $false }
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash.ToLower()
+    return ($actual -eq $Sha256.ToLower())
+}
+
+# Download with retries. When an expected SHA-256 is supplied both the cached
+# file and every fresh download are verified: a truncated cache entry (e.g. an
+# interrupted earlier run) is deleted and re-fetched instead of silently
+# poisoning all later builds.
+function Download-File([string]$url, [string]$dest, [string]$sha256 = '') {
     if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) {
-        Write-Host "  cached: $dest"
-        return
+        if (Test-FileSha256 $dest $sha256) {
+            Write-Host "  cached: $dest"
+            return
+        }
+        Write-Host "  cached file failed SHA-256 check, discarding: $dest"
+        Remove-Item -Force $dest
     }
     $attempts = 3
     for ($i = 1; $i -le $attempts; $i++) {
         try {
             Write-Host "  downloading ($i/$attempts): $url"
             Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $dest
-            if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt 0)) { return }
-            throw 'downloaded file is empty'
+            if (-not (Test-Path $dest) -or (Get-Item $dest).Length -eq 0) { throw 'downloaded file is empty' }
+            if (-not (Test-FileSha256 $dest $sha256)) { throw "SHA-256 mismatch: $url" }
+            return
         }
         catch {
+            Remove-Item -Force $dest -ErrorAction SilentlyContinue
             if ($i -eq $attempts) { throw }
             Start-Sleep -Seconds (3 * $i)
         }
@@ -97,104 +130,104 @@ function Download-File([string]$url, [string]$dest) {
 }
 
 # ---------------------------------------------------------------------------
-# 1. Resolve Rust version + component URLs from channel TOML
-#    We parse the TOML manually (PS 5.1 has no built-in TOML parser).
-#    - Top-level `date` is the channel date.
-#    - `[pkg.rust].version` has format "X.Y.Z (commit date)"; we extract X.Y.Z.
-#    - Each component has a per-target section with a precise `url` field.
+# 1. Resolve Rust version + component URLs/hashes from the official channel TOML
+#    PS 5.1 has no TOML parser, so the file is scanned line by line:
+#      - top-level `date` = channel date
+#      - `[pkg.rust].version` = "X.Y.Z (commit date)" → take X.Y.Z
+#      - each component has a per-target section with `url` + `hash`
+#    channel-rust-stable.toml only describes the CURRENT release, so a pinned
+#    version is resolved from its own immutable channel-rust-<version>.toml
+#    (which carries the matching date dir + hashes). The previous "rewrite the
+#    stable URL with the pinned version number" trick produced a 404 for every
+#    release that was not the current stable one.
 # ---------------------------------------------------------------------------
-Write-Step 'Resolving Rust release from channel-rust-stable.toml'
-$channelContent = Invoke-RestMethod -Uri $ChannelUrl -ErrorAction Stop
-if (-not $channelContent) { throw "Empty channel TOML from $ChannelUrl" }
+function Get-ChannelInfo([string]$Url) {
+    Write-Host "  reading $Url"
+    $content = Invoke-RestMethod -Uri $Url -UseBasicParsing -ErrorAction Stop
+    if (-not $content) { throw "Empty channel TOML from $Url" }
 
-$rustVersion = $null
-$rustDate    = $null
-$targetUrls  = @{}   # componentName => download URL
+    $info = [ordered]@{ Version = $null; Date = $null; Urls = @{}; Hashes = @{} }
+    $currentSection = ''
+    foreach ($rawLine in ($content -split "`n")) {
+        $line = $rawLine.Trim()
+        if (-not $line) { continue }
 
-$lines = $channelContent -split "`n"
-$currentSection = ''
-foreach ($line in $lines) {
-    $line = $line.Trim()
-    if (-not $line) { continue }
+        # Section headers. The live channel TOML (verified 2026-11-08) uses
+        # plain [table] for per-target entries, but [[array-of-tables]] is
+        # accepted too so an upstream serialization change cannot silently
+        # break parsing.
+        if ($line -match '^\[+(.+?)\]+$') {
+            $currentSection = $Matches[1]
+            continue
+        }
 
-    # Track which TOML section we're in.
-    # Rust's channel TOML uses BOTH [single-bracket tables] and
-    # [[double-bracket array-of-tables]] (for per-target entries).
-    # We match either form and strip ALL bracket chars to get the section path.
-    if ($line -match '^\[+(.+?)\]+$') {
-        $currentSection = $Matches[1]
-        continue
+        if ($currentSection -eq '' -and $line -match '^date\s*=\s*"([^"]+)"') {
+            $info.Date = $Matches[1]
+            continue
+        }
+        if ($currentSection -eq 'pkg.rust' -and $line -match '^version\s*=\s*"(\d+\.\d+\.\d+)') {
+            $info.Version = $Matches[1]
+            continue
+        }
+
+        if ($currentSection -match ('^pkg\.(?<comp>rustc|cargo|rust-std|rust-docs|clippy-preview|rustfmt-preview)\.target\.' + [regex]::Escape($Target) + '$')) {
+            # Capture the component name NOW — the url/hash regexes below
+            # overwrite $Matches.
+            $comp = $Matches['comp']
+            if ($line -match '^url\s*=\s*"([^"]+\.tar\.gz)"') {
+                $info.Urls[$comp] = $Matches[1]
+            }
+            elseif ($line -match '^hash\s*=\s*"([0-9a-fA-F]{64})"') {
+                $info.Hashes[$comp] = $Matches[1].ToLower()
+            }
+        }
     }
-
-    # Top-level channel date (NOT inside any [pkg.*] section)
-    if ($currentSection -eq '' -and $line -match '^date\s*=\s*"([^"]+)"') {
-        $rustDate = $Matches[1]
-    }
-
-    # Pure version from [pkg.rust]: "1.99.1 (58cf8f9c3 2026-10-13)" → "1.99.1"
-    if ($currentSection -eq 'pkg.rust' -and $line -match '^version\s*=\s*"(\d+\.\d+\.\d+)') {
-        $rustVersion = $Matches[1]
-    }
-
-    # Per-target component URLs from e.g. [[pkg.rustc.target.x86_64-pc-windows-msvc]]
-    # Extract comp name from $currentSection (NOT $Matches[0]) — the inner URL regex
-    # overwrites $Matches, so $Matches[0] contains the URL line, not the section.
-    if ($currentSection -match '^pkg\.(rustc|cargo|rust-std|clippy-preview|rustfmt-preview)\.target\.' + [regex]::Escape($Target) + '$' -and
-        $line -match '^url\s*=\s*"([^"]+\.tar\.gz)"') {
-        $compName = ($currentSection -split '\.')[1]    # pkg.<name>.target...
-        $targetUrls[$compName] = $Matches[1]
-    }
+    return [pscustomobject]$info
 }
 
-if (-not $rustVersion) { throw "Could not parse rust version from $ChannelUrl" }
-if (-not $rustDate)    { throw "Could not parse channel date from $ChannelUrl" }
-if (-not $targetUrls['rustc'])          { throw "Could not resolve rustc URL for target $Target" }
-if (-not $targetUrls['cargo'])          { throw "Could not resolve cargo URL for target $Target" }
-if (-not $targetUrls['rust-std'])       { throw "Could not resolve rust-std URL for target $Target" }
-if (-not $targetUrls['clippy-preview']) { throw "Could not resolve clippy-preview URL for target $Target" }
-if (-not $targetUrls['rustfmt-preview']){ throw "Could not resolve rustfmt-preview URL for target $Target" }
+Write-Step 'Resolving Rust release from the official channel TOML'
+$channelUrlUsed = $ChannelUrl
+$channel = Get-ChannelInfo $ChannelUrl
+if (-not $channel.Version) { throw "Could not parse rust version from $ChannelUrl" }
+if (-not $channel.Date)    { throw "Could not parse channel date from $ChannelUrl" }
 
 if ($RustVersion) {
     if ($RustVersion -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid -RustVersion: $RustVersion" }
-    if ($RustVersion -ne $rustVersion) {
-        Write-Host "  requested $RustVersion, channel has $rustVersion (WARNING: old version URLs may 404)"
-        $rustVersion = $RustVersion
-        # Note: channel TOML only lists the current stable version's URLs.
-        # If the user pins an older version, we reconstruct the download URLs
-        # using the pinned version + the channel date. This may 404 if the
-        # date directory changed since that old version was published.
+    if ($RustVersion -ne $channel.Version) {
+        $channelUrlUsed = "https://static.rust-lang.org/dist/channel-rust-$RustVersion.toml"
+        try { $channel = Get-ChannelInfo $channelUrlUsed }
+        catch { throw "Rust $RustVersion is not a released version ($channelUrlUsed): $($_.Exception.Message)" }
+        if ($channel.Version -ne $RustVersion) {
+            throw "Pinned channel TOML reports $($channel.Version), expected $RustVersion ($channelUrlUsed)"
+        }
     }
 }
+
+$rustVersion = $channel.Version
+$rustDate    = $channel.Date
 Write-Host "  Rust version : $rustVersion (channel date: $rustDate)"
 
-# Build the component list using URLs from the channel TOML.
-# Component names are the channel's own names: rustfmt/clippy ship as
-# `rustfmt-preview` / `clippy-preview` (NOT `rustfmt` / `clippy`), and each
-# archive's inner payload directory carries that same name. FileStem is the
-# prefix of the archive FILE name, which drops the `-preview` suffix
-# (clippy-<ver>-<target>.tar.gz) — the two differ, so pinning a version must
-# reconstruct with FileStem, not Name.
-# Verified against the real archives for 1.99.1:
-#   clippy-...:  clippy-preview/{bin/cargo-clippy.exe, bin/clippy-driver.exe,
-#                               share/doc/clippy/*}   (manifest.in also lists *.pdb)
-#   rustfmt-...: rustfmt-preview/{bin/rustfmt.exe, bin/cargo-fmt.exe,
-#                               share/doc/rustfmt/*}  (manifest.in also lists *.pdb)
-# If the user pinned a specific version, fall back to URL reconstruction.
-$components = @(
-    @{ Name = 'rustc';           FileStem = 'rustc';    Url = $targetUrls['rustc'] },
-    @{ Name = 'cargo';           FileStem = 'cargo';    Url = $targetUrls['cargo'] },
-    @{ Name = 'rust-std';        FileStem = 'rust-std'; Url = $targetUrls['rust-std'] },
-    @{ Name = 'clippy-preview';  FileStem = 'clippy';   Url = $targetUrls['clippy-preview'] },
-    @{ Name = 'rustfmt-preview'; FileStem = 'rustfmt';  Url = $targetUrls['rustfmt-preview'] }
-)
-foreach ($comp in $components) {
-    # If we pinned a version, the channel URL won't match — reconstruct it
-    if ($comp.Url -notmatch ([regex]::Escape($rustVersion) + '-')) {
-        $baseUrl = [regex]::Replace($comp.Url, '/[^/]+$', '')
-        $comp.Url = "$baseUrl/$($comp.FileStem)-$rustVersion-$Target.tar.gz"
-        Write-Host "  pinned version: reconstructed $($comp.Name) URL"
-    }
+# Official `[profiles] default` for this target is rustc + cargo + rust-std +
+# rust-docs + rustfmt-preview + clippy-preview. (rust-mingw is listed in every
+# profile but has NO x86_64-pc-windows-msvc target section, so rustup cannot
+# install it on an MSVC host either — verified against the live channel TOML.)
+# Keep this list in lock-step with the official default profile: omitting
+# rust-docs made the package diverge from `rustup default stable`.
+$componentNames = @('rustc', 'cargo', 'rust-std', 'rust-docs', 'clippy-preview', 'rustfmt-preview')
+$components = @()
+foreach ($name in $componentNames) {
+    $url  = $channel.Urls[$name]
+    $hash = $channel.Hashes[$name]
+    if (-not $url) { throw "Could not resolve $name URL for target $Target" }
+    if (-not $hash) { Write-Host "  WARNING: $name has no hash in the channel TOML; download will be unverified" }
+    # rustc MUST stay first: it seeds the stage tree with a mirroring copy
+    # (/MIR), every following component overlays (/E).
+    $components += @{ Name = $name; Url = $url; Sha256 = $hash }
 }
+# Channel component names are also the archive's inner payload directory name
+# (verified for rustfmt-preview / clippy-preview), while the archive FILE names
+# drop the "-preview" suffix — we never rebuild file names, the URL and its
+# SHA-256 come straight from the channel TOML.
 
 # ---------------------------------------------------------------------------
 # 2. Download all assets
@@ -204,16 +237,15 @@ if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 
 foreach ($comp in $components) {
-    $url = $comp.Url
-    $dest = Join-Path $CacheDir ([IO.Path]::GetFileName($url))
+    $dest = Join-Path $CacheDir ([IO.Path]::GetFileName($comp.Url))
     Write-Step "Downloading $($comp.Name)"
-    Download-File $url $dest
-    $comp | Add-Member -NotePropertyName LocalPath -NotePropertyValue $dest
+    Download-File $comp.Url $dest $comp.Sha256
+    $comp['LocalPath'] = $dest
 }
 
 Write-Step 'Downloading xwin (for SDK extraction)'
 $xwinDest = Join-Path $CacheDir $XwinAsset
-Download-File $XwinUrl $xwinDest
+Download-File $XwinUrl $xwinDest $XwinSha256
 
 # ---------------------------------------------------------------------------
 # 3. Extract Rust components and merge into stage
@@ -277,6 +309,42 @@ if (-not (Test-Path $stdLibDir)) {
     $tree = (Get-ChildItem -Recurse -Depth 2 $StageDir -Directory | Select-Object -First 30 |
         ForEach-Object { $_.FullName.Replace($StageDir, '') }) -join "`n"
     throw "rust-std not staged at $stdLibDir - merge produced wrong layout. Dirs under stage:`n$tree"
+}
+# rust-docs is part of the official default profile; without it the local HTML
+# books (the `rustup doc` equivalent) would be missing.
+$docsHtmlDir = Join-Path $StageDir 'share\doc\rust\html'
+if (-not (Test-Path $docsHtmlDir)) { throw "rust-docs payload missing: $docsHtmlDir" }
+
+# ---------------------------------------------------------------------------
+# 3b. Drop debug symbols for tools this package never invokes.
+#     The rustc component ships per-flavor LLD PDBs (ld.lld / ld64.lld /
+#     wasm-ld / lld-link) plus one for wasm-component-ld. This package only
+#     runs the lld-link flavor, and an MSVC-only install cannot emit ELF /
+#     Mach-O / wasm output at all, so those four PDBs are provably dead weight
+#     (19,906,560 bytes / 18.98 MiB uncompressed at 1.99.1). Everything else in
+#     the official
+#     default profile is kept byte-for-byte — in particular rustc / rustdoc /
+#     lld-link PDBs stay, so ICE backtraces and linker debugging keep working.
+# ---------------------------------------------------------------------------
+$deadPdb = @(
+    "lib\rustlib\$Target\bin\gcc-ld\ld.lld.pdb",
+    "lib\rustlib\$Target\bin\gcc-ld\ld64.lld.pdb",
+    "lib\rustlib\$Target\bin\gcc-ld\wasm-ld.pdb",
+    "lib\rustlib\$Target\bin\wasm-component-ld.pdb"
+)
+$prunedPdbBytes = 0
+$prunedPdbCount = 0
+foreach ($rel in $deadPdb) {
+    $p = Join-Path $StageDir $rel
+    if (Test-Path $p) {
+        $prunedPdbBytes += (Get-Item $p).Length
+        Remove-Item -Force $p
+        $prunedPdbCount++
+    }
+}
+Write-Host ("  pruned {0} unused linker/wasm PDB(s), {1:N0} bytes" -f $prunedPdbCount, $prunedPdbBytes)
+if ($prunedPdbCount -ne $deadPdb.Count) {
+    Write-Host "  WARNING: expected $($deadPdb.Count) prunable PDBs, found $prunedPdbCount — upstream layout may have changed"
 }
 
 # ---------------------------------------------------------------------------
@@ -405,6 +473,13 @@ $lldCode = $LASTEXITCODE
 # cargo shim): proves bin\rustfmt.exe was merged and is executable.
 $rustfmtOut = (& (Join-Path $StageDir 'bin\rustfmt.exe') --version 2>&1) -join "`n"
 $rustfmtCode = $LASTEXITCODE
+# `-vV` reports the host triple and `--print sysroot` the std/LLD root. Both
+# come from rustc itself, so they catch a staged rustc that silently resolves
+# its sysroot to some other toolchain on the machine.
+$rustcVvOut     = (& $rustcExe -vV 2>&1) -join "`n"
+$rustcVvCode    = $LASTEXITCODE
+$rustcSysroot   = (& $rustcExe --print sysroot 2>&1) -join "`n"
+$rustcSysrootCode = $LASTEXITCODE
 
 $ErrorActionPreference = $prevEap
 $rustVersionRe = [regex]::Escape($rustVersion)
@@ -414,6 +489,14 @@ if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersionRe") {
 if ($cargoCode -ne 0) { throw "cargo failed: $cargoOut" }
 if ($lldCode -ne 0) { throw "lld-link failed: $lldOut" }
 if ($rustfmtCode -ne 0) { throw "rustfmt failed: $rustfmtOut" }
+if ($rustcVvCode -ne 0 -or $rustcVvOut -notmatch ('(?m)^host: ' + [regex]::Escape($Target) + '$')) {
+    throw "rustc -vV does not report host $Target :`n$rustcVvOut"
+}
+if ($rustcSysrootCode -ne 0) { throw "rustc --print sysroot failed: $rustcSysroot" }
+$sysrootPath = $rustcSysroot.Trim()
+if ($sysrootPath.TrimEnd('\') -ne $StageDir.TrimEnd('\')) {
+    throw "rustc sysroot is '$sysrootPath' but the staged tree is '$StageDir' — std/LLD would be resolved from elsewhere"
+}
 $lldVer = if ($lldOut -match 'LLD (\S+)') { $Matches[1] } else { 'unknown' }
 Write-Host "  $rustcOut"
 Write-Host "  $cargoOut"
@@ -509,16 +592,55 @@ try {
     & $cargoExe new --bin --vcs none helloworld 2>&1 | ForEach-Object { Write-Host "  cargo new : $_" }
     if ($LASTEXITCODE -ne 0) { throw "cargo new failed with exit code $LASTEXITCODE" }
 
+    # Replace the generated hello-world with a crate that calls a Win32 API
+    # through an import library std never links (iphlpapi.lib). The explicit
+    # `#[link]` forces lld-link to resolve it from the staged sdk\lib\um dir, so
+    # a wrong/missing UM lib path fails HERE instead of in the user's first
+    # project. The source is rustfmt-clean because `cargo fmt --check` runs below.
+    $mainRs = @'
+#[link(name = "iphlpapi")]
+unsafe extern "system" {
+    fn GetNumberOfInterfaces(num_if: *mut u32) -> u32;
+}
+
+fn main() {
+    let mut num_if: u32 = 0;
+    let rc = unsafe { GetNumberOfInterfaces(&mut num_if) };
+    println!("ifaces={num_if} rc={rc}");
+}
+'@
+    # Here-strings drop the newline before the closing '@; rustfmt requires a
+    # trailing newline, so add it explicitly (otherwise cargo fmt --check fails).
+    [IO.File]::WriteAllText((Join-Path $smokeProj 'src\main.rs'), $mainRs + "`n", $utf8NoBom)
+
     Push-Location $smokeProj
     try {
-        & $cargoExe build --release 2>&1 | ForEach-Object { Write-Host "  cargo build : $_" }
+        $buildLog = New-Object System.Collections.Generic.List[string]
+        & $cargoExe build --release -v 2>&1 | ForEach-Object {
+            $buildLog.Add([string]$_)
+            Write-Host "  cargo build : $_"
+        }
         if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
+
+        # -v echoes rustc's command line; it must carry OUR wrapper as the
+        # linker. This is the only check that proves the CARGO_HOME config was
+        # applied (cargo silently ignoring it would still link on a runner that
+        # happens to have Visual Studio installed).
+        if (($buildLog -join "`n") -notmatch [regex]::Escape($lldLink)) {
+            throw "cargo did not pass the bundled lld-link to rustc (cargo config not applied): $lldLink"
+        }
     }
     finally { Pop-Location }
 
     $exe = Join-Path $smokeProj 'target\release\helloworld.exe'
     if (-not (Test-Path $exe)) { throw "cargo build did not produce $exe" }
     Write-Host "  smoke build OK => $exe ($((Get-Item $exe).Length) bytes)"
+
+    # Run the produced PE: proves the binary actually resolves its imports.
+    $exeOut = (& $exe 2>&1) -join "`n"
+    if ($LASTEXITCODE -ne 0) { throw "smoke binary exited with $LASTEXITCODE : $exeOut" }
+    if ($exeOut -notmatch 'ifaces=\d+') { throw "smoke binary produced unexpected output: $exeOut" }
+    Write-Host "  smoke run OK => $exeOut"
 
     # rustfmt / clippy through cargo's external-subcommand resolution: this
     # proves bin\cargo-fmt.exe and bin\cargo-clippy.exe are reachable via PATH
@@ -547,32 +669,13 @@ finally {
 }
 
 # ---------------------------------------------------------------------------
-# 7. Write cargo config template (fallback only; the installer decides)
+# 7. Compile installer
 # ---------------------------------------------------------------------------
-# The installer writes %USERPROFILE%\.cargo\config.toml ONLY when the machine
-# has no usable MSVC toolchain (no VS C++ tools and/or no Windows SDK). When a
-# system toolchain exists, official defaults are kept and nothing is written.
-# This staged template uses the __APP_DIR__ placeholder and is deleted from the
-# install dir at ssPostInstall — it is the source of truth for the fallback.
-$cargoConfigDir = Join-Path $StageDir '.cargo'
-New-Item -ItemType Directory -Force -Path $cargoConfigDir | Out-Null
-$templateLines = @(
-    "    '-L', '__APP_DIR__\$ucrtRel'",
-    "    '-L', '__APP_DIR__\$umRel'",
-    "    '-L', '__APP_DIR__\$vcRel'"
-)
-$cargoConfig = @"
-[target.x86_64-pc-windows-msvc]
-linker = '__APP_DIR__\$lldRel'
-rustflags = [
-$($templateLines -join ",`n")
-]
-"@
-[IO.File]::WriteAllText((Join-Path $cargoConfigDir 'config.toml'), $cargoConfig, $utf8NoBom)
-
-# ---------------------------------------------------------------------------
-# 8. Compile installer
-# ---------------------------------------------------------------------------
+# The fallback %USERPROFILE%\.cargo\config.toml is generated by the installer
+# itself (setup.iss) from the /DSdk*Path + /DSdkLldPath defines below, only when
+# the machine has no usable MSVC toolchain. Nothing is staged into the install
+# tree for it: the old staged .cargo\config.toml placeholder was never read by
+# setup.iss and only left an empty .cargo\ directory behind after install.
 $SetupName = "rust-$rustVersion-msvc-setup-x64"
 $SetupExe  = Join-Path $OutDir "$SetupName.exe"
 
@@ -607,25 +710,29 @@ else {
 }
 
 # ---------------------------------------------------------------------------
-# 9. Metadata / release notes / GitHub outputs
+# 8. Metadata / release notes / GitHub outputs
 # ---------------------------------------------------------------------------
+$stageBytes = [int64](Get-ChildItem -LiteralPath $StageDir -Recurse -File | Measure-Object Length -Sum).Sum
 $buildInfo = [ordered]@{
-    package        = 'rust'
-    rustVersion    = $rustVersion
-    channelDate    = $rustDate
-    target         = $Target
-    rustChannelUrl = $ChannelUrl
-    componentUrls  = @($components | ForEach-Object { $_.Url })
-    lldVersion     = $lldVer
-    lldSource      = 'rustc component (bundled rust-lld, via gcc-ld/lld-link.exe)'
-    xwinVersion    = $XwinVersion
-    xwinSource     = 'https://github.com/Jake-Shadle/xwin'
-    sdkSource      = 'Microsoft official CDN (extracted via xwin)'
-    defaultPath    = 'C:\pf\rust'
-    pathEntries    = @('C:\pf\rust\bin', '%USERPROFILE%\.cargo\bin')
-    components     = @($components | ForEach-Object { $_.Name })
-    commands       = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy')
-    builtAt        = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    package         = 'rust'
+    rustVersion     = $rustVersion
+    channelDate     = $rustDate
+    target          = $Target
+    rustChannelUrl  = $channelUrlUsed
+    componentUrls   = @($components | ForEach-Object { $_.Url })
+    componentHashes = @($components | ForEach-Object { $_.Sha256 })
+    lldVersion      = $lldVer
+    lldSource       = 'rustc component (bundled rust-lld, via gcc-ld/lld-link.exe)'
+    xwinVersion     = $XwinVersion
+    xwinSource      = 'https://github.com/Jake-Shadle/xwin'
+    sdkSource       = 'Microsoft official CDN (extracted via xwin)'
+    defaultPath     = 'C:\pf\rust'
+    pathEntries     = @('C:\pf\rust\bin', '%USERPROFILE%\.cargo\bin')
+    components      = @($components | ForEach-Object { $_.Name })
+    commands        = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy')
+    prunedPdbBytes  = $prunedPdbBytes
+    stageBytes      = $stageBytes
+    builtAt         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 }
 if (-not $SkipCompile) {
     $hash = (Get-FileHash -Algorithm SHA256 $SetupExe).Hash.ToLower()
@@ -646,6 +753,7 @@ if (-not $SkipCompile) {
 | 组件 | 版本 / 来源 |
 | --- | --- |
 | Rust | $rustVersion（stable channel，$rustDate） |
+| rust-docs | 随 Rust $rustVersion（官方 rust-docs 组件，HTML 文档位于 ``<安装目录>\share\doc\rust\html``） |
 | rustfmt | 随 Rust $rustVersion（官方 rustfmt-preview 组件，含 cargo-fmt） |
 | clippy | 随 Rust $rustVersion（官方 clippy-preview 组件，含 clippy-driver） |
 | 目标 | x86_64-pc-windows-msvc |

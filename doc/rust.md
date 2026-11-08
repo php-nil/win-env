@@ -15,10 +15,10 @@
 
 | 项 | 值 |
 | --- | --- |
-| 产物文件 | `rust-<version>-msvc-setup-x64.exe`（LZMA2 固实压缩 + 128 MB 字典；2026-10 实测 1.99.1 约 166 MiB，新增 rustfmt/clippy 组件后的体积以 CI 实测为准） |
+| 产物文件 | `rust-<version>-msvc-setup-x64.exe`（LZMA2 固实压缩 + 128 MB 字典；1.99.1 官方默认组件归档合计 265.6 MiB / 278.5 MB，安装包 220–240 MiB 量级，精确值以 CI 产物为准） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
 | Release 标签 | `rust-<version>-msvc`；另有常青别名 `rust-latest`（资产名固定 `rust-setup-x64.exe`，README 下载链接指向它） |
-| 规格 | 官方 Rust 组件归档（`rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview`）· x86_64-pc-windows-msvc · stable channel |
+| 规格 | 官方 Rust **`default` profile** 全部组件（`rustc` / `cargo` / `rust-std` / `rust-docs` / `rustfmt-preview` / `clippy-preview`）· x86_64-pc-windows-msvc · stable channel |
 | 默认安装目录 | `C:\pf\rust`（安装向导中可修改，**不带版本号后缀**） |
 | 安装后命令 | `rustc`、`cargo`、`rustfmt`、`cargo fmt`、`cargo clippy`（安装目录的 `bin` 加入系统 PATH，`%USERPROFILE%\.cargo\bin` 加入用户 PATH，新开命令行即可用） |
 | 运行时依赖 | 无（免 Visual Studio：无系统 MSVC 工具链时用内置 LLD 链接器 + 经 xwin 提取的 Windows SDK / CRT 兜底；系统已有 VS C++ 工具 + SDK 时走官方默认） |
@@ -42,7 +42,7 @@
 ## 3. 安装包行为
 
 - 双击安装，向导默认目录 `C:\pf\rust`，可自行修改。
-- 安装内容即暂存树 `build/stage/rust` 的原样释放：`bin\`（`rustc.exe` / `cargo.exe`）、`lib\rustlib\`（标准库与内置 LLD）、`crt\` / `sdk\`（经 xwin 提取的 CRT/SDK 头文件与库），安装器不在安装期下载或拼装任何内容。
+- 安装内容即暂存树 `build/stage/rust` 的原样释放：`bin\`（`rustc.exe` / `cargo.exe` / `rustfmt.exe` / `cargo-clippy.exe` 等）、`lib\rustlib\`（标准库与内置 LLD）、`share\doc\rust\html\`（官方 rust-docs 的离线 HTML 文档，对应 `rustup doc` 的内容）、`crt\` / `sdk\`（经 xwin 提取的 CRT/SDK 头文件与库），安装器不在安装期下载或拼装任何内容。安装树里**没有** `.cargo\` 占位目录——兜底配置只写用户级 `%USERPROFILE%\.cargo\config.toml`。
 - PATH（**必加，无安装选项**）：`{app}\bin` 加入**系统** PATH，保证新开命令行中 `rustc` / `cargo` / `rustfmt` 可直接使用。
   - 安装时幂等追加（不重复、不动无关条目、顺带去空条目），并广播 `WM_SETTINGCHANGE`；
   - 卸载时精确移除该条目，其余 PATH 内容保留。
@@ -53,7 +53,7 @@
 - **Cargo 链接器配置（"与官方一致"优先，安装时按环境决定）**：安装器在 `ssPostInstall` 探测系统是否已有可用的 MSVC 工具链——
   - **探测到**（系统存在 VS C++ 工具目录 `…\VC\Tools\MSVC`，且 Windows SDK 已注册）：**不写任何 cargo 配置**，与官方 rustup 行为一致，rustc 自行发现 `link.exe` 与 SDK 库路径；若此前在无 VS 机器上安装过并残留本段，安装时一并回收；
   - **探测不到**：写 `%USERPROFILE%\.cargo\config.toml`，新增/替换 `[target.x86_64-pc-windows-msvc]` 段——`linker` 指向安装目录内 rustc 自带的 `lib\rustlib\x86_64-pc-windows-msvc\bin\gcc-ld\lld-link.exe`（`{app}` 绝对路径，不依赖 PATH），`rustflags` 追加 `-L` 指向 `crt\lib\x86_64`、`sdk\lib\ucrt\x86_64`、`sdk\lib\um\x86_64` 三个库目录；
-  - **段级合并**：文件已存在时只替换本段，保留用户其他配置；卸载时移除本段（若文件仅剩空白则删除文件）。
+  - **段级合并**：文件已存在时只替换本段，保留用户其他配置；本段首行是标记注释 `# win-env: fallback linker config (removed on uninstall)`，卸载（以及装入有 VS 机器时的清理）**只删除带该标记的段**，用户手写的 `[target.x86_64-pc-windows-msvc]` 段一律不动；若文件仅剩空白则删除文件。
   - 探测规则**偏保守**：误判为"不可用"最多是多写一份可用的兜底配置（无害），误判为"可用"却实际不可用才会让用户构建失败，因此要求 VS C++ 工具目录与 SDK 注册**同时**成立。
 - 安装器固定 `AppId`（`{{7E3B9A2D-4C5F-4E8A-B1D6-9F0A3C7E2B51}`），重复安装/升级替换同一安装实例。
 
@@ -61,7 +61,7 @@
 
 | 组件 | 来源 | 取用内容 |
 | --- | --- | --- |
-| Rust 工具链 | <https://static.rust-lang.org/dist/channel-rust-stable.toml> | 版本与各组件精确 URL；下载 `rustc` / `cargo` / `rust-std` / `rustfmt-preview` / `clippy-preview` 的 `-x86_64-pc-windows-msvc.tar.gz` 并合并为暂存树（后两者的**归档文件名**为 `rustfmt` / `clippy`，无 `-preview`，见 §6） |
+| Rust 工具链 | <https://static.rust-lang.org/dist/channel-rust-stable.toml>（指定 `-RustVersion` 时改用该版本自己的 `channel-rust-<version>.toml`） | 版本、各组件精确 URL 与 **SHA-256**；下载 `rustc` / `cargo` / `rust-std` / `rust-docs` / `rustfmt-preview` / `clippy-preview` 的 `-x86_64-pc-windows-msvc.tar.gz`（即官方 `[profiles] default`），逐个校验后合并为暂存树（rustfmt / clippy 的**归档文件名**为 `rustfmt` / `clippy`，无 `-preview`，见 §6） |
 | LLD 链接器 | **rustc 组件自带**，无独立下载 | `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（真正的多 flavor 驱动）+ `gcc-ld\lld-link.exe`（按名分派的极小包装器，按相对路径拉起 `rust-lld`） |
 | Windows SDK / CRT | 微软官方 CDN（`https://aka.ms/vs/17/release`），经 [xwin](https://github.com/Jake-Shadle/xwin) 提取 | `crt\`（VC 头文件与 `msvcrt`/`vcruntime` 导入库）、`sdk\`（UCRT 与 Windows SDK 头文件/`kernel32` 等导入库） |
 | 版本发现 | GitHub API（xwin 最新 release） | 自动取最新 xwin 的 Windows MSVC `.tar.gz` 资产，避免硬编码版本被清理后 404 |
@@ -101,8 +101,12 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 
 ## 6. 设计约定
 
-- **不硬编码版本**：Rust 补丁版本从官方 channel TOML 解析（`[pkg.rust].version` 去括号后缀，顶层 `date` 为 channel 日期），组件 URL 亦直接取自该文件，不猜测；解析为空立即终止。TOML 解析（PS 5.1 无内置解析器，只能按行扫描）需同时兼容 `[table]` 与 `[[array-of-table]]`：官方 channel 里 per-target 组件节是 `[[pkg.rustc.target.x86_64-pc-windows-msvc]]` 双括号数组表，顶层 `date`、`[pkg.rust]` 才是单括号。节名匹配用 `^\[+(.+?)\]+$` 一次性吃掉 `[` 与 `[[`（剥掉全部方括号得到节路径）再按路径取字段；取组件名必须用**节路径**而非 `$Matches[0]`——后续行内 `url = "..."` 的正则会覆盖 `$Matches`。只认单括号会与双括号节名擦肩而过、解析结果为空，脚本随即以"解析为空"终止。
-- **组件名 ≠ 归档文件名**：channel 中 rustfmt / clippy 的组件名是 `rustfmt-preview` / `clippy-preview`，归档文件名却是 `rustfmt-<ver>-<target>.tar.gz` / `clippy-<ver>-<target>.tar.gz`（无 `-preview`）。因此 `$components` 同时保存 `Name`（解析键 + 内层合并目录名）与 `FileStem`（pinned 版本重建 URL 用的文件名前缀）；把二者混用会拼出 `rustfmt-preview-<ver>-…tar.gz` 而 404。实测内部布局：`rustfmt-preview/` 含 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`，`clippy-preview/` 含 `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`；两者 `manifest.in` 都列出 `*.pdb` —— 官方安装同样包含这些 PDB，故**全量拷贝即与官方一致**。另外 channel 里写的节名是 `[pkg.rustfmt-preview.target.x86_64-pc-windows-msvc]`（带 `-preview`），同一节的 `url` 指向的却是 `rustfmt-1.99.1-x86_64-pc-windows-msvc.tar.gz`（不带）——按组件名拼 URL 必 404；rustfmt / clippy 的可执行文件全部落在 `bin\`（`cargo fmt` / `cargo clippy` 靠 PATH 找 `cargo-fmt.exe` / `cargo-clippy.exe`），因此必须与 `cargo.exe` 同处 `bin\`，也就是加入系统 PATH 的那个目录。
+- **不硬编码版本**：Rust 补丁版本从官方 channel TOML 解析（`[pkg.rust].version` 去括号后缀，顶层 `date` 为 channel 日期），组件 URL 亦直接取自该文件，不猜测；解析为空立即终止。TOML 解析（PS 5.1 无内置解析器，只能按行扫描）需同时兼容 `[table]` 与 `[[array-of-table]]`：2026-11-08 实测 live `channel-rust-stable.toml` 的 per-target 组件节是**单括号** `[pkg.rustc.target.x86_64-pc-windows-msvc]`（旧版本的 `[[...]]` 双括号回忆已过时，但两种都接受，避免上游序列化方式变化时静默解析为空）。节名匹配用 `^\[+(.+?)\]+$` 一次性吃掉 `[` 与 `[[`（剥掉全部方括号得到节路径）再按路径取字段；取组件名必须用**节路径**而非 `$Matches[0]`——后续行内 `url = "..."` 的正则会覆盖 `$Matches`。
+- **钉版本不再拼 URL**：`channel-rust-stable.toml` 只描述**当前** stable 的 URL 与日期目录，拿它 + 旧版本号重建 URL 必然 404（旧代码正是如此）。现在指定 `-RustVersion X.Y.Z` 且与 stable 不同时，改为读取该版本自己的 `https://static.rust-lang.org/dist/channel-rust-X.Y.Z.toml`（每个已发布版本都有，内容不可变），其中的 URL、日期目录与 SHA-256 一次到位；文件不存在或版本号不符立即报错。
+- **下载完整性校验（强制）**：channel TOML 的每个 per-target 节都带 `hash = "<sha256>"`，`Download-File` 对**缓存命中**与**每次新下载**都做 SHA-256 校验，不一致/为空即删除重试（最多 3 次）。这堵住了"上次中断留下半截文件 → 后续每次构建都复用坏包"的静默失败；xwin 资产则取其同名 `.sha256` 资产（GitHub Release 提供）校验。
+- **组件名 ≠ 归档文件名**：channel 中 rustfmt / clippy 的组件名是 `rustfmt-preview` / `clippy-preview`，归档文件名却是 `rustfmt-<ver>-<target>.tar.gz` / `clippy-<ver>-<target>.tar.gz`（无 `-preview`）。现在**不再由组件名拼 URL**（URL 直接来自 channel TOML，`FileStem` 已删除），组件名只用于取 URL/哈希与匹配内层合并目录。实测内部布局：`rustfmt-preview/` 含 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`，`clippy-preview/` 含 `bin\clippy-driver.exe`、`bin\cargo-clippy.exe`，`rust-docs/` 含 `share\doc\rust\html\`；三者的可执行文件都落在 `bin\`，与 `cargo.exe` 同处加入系统 PATH 的目录。
+- **官方 `default` profile 一个不少**：`[profiles] default = ["rustc", "cargo", "rust-std", "rust-mingw", "rust-docs", "rustfmt-preview", "clippy-preview"]`。其中 `rust-mingw` 在 channel 里**没有** `x86_64-pc-windows-msvc` 的 per-target 节（只有 gnu/gnullvm），rustup 在 MSVC 主机上同样装不上，故本包也不包含；`rust-docs` 有该节且属默认组件，此前漏装，现已补齐（离线文档落在 `share\doc\rust\html`），构建后强制断言该目录存在。
+- **只删确定无用的 PDB**：rustc 组件带 `gcc-ld\{ld.lld,ld64.lld,wasm-ld}.pdb` 与 `bin\wasm-component-ld.pdb`，这几个 flavor 本包永远不会调用（只跑 `lld-link`，且没有 rustup 就无法产出 ELF/Mach-O/wasm），组装阶段删除（1.99.1 为 4 个文件、19,906,560 字节 = 18.98 MiB 未压缩）。`rustc` / `rustdoc` / `lld-link` 的 PDB 与其余官方文件**全部保留**，ICE 回溯与链接器调试不受影响。
 - **LLD 不额外下载**：rustc 组件已内置 `rust-lld` 与其 `gcc-ld` 小小的 per-flavor 包装器，`linker` 指向 `gcc-ld\lld-link.exe` 即可；该包装器**按相对路径**定位 `rust-lld`，因此**必须保持组件原始相对布局**（不得把 `lld-link.exe` 单独搬到 `bin\`）。此前从 LLVM Release 下载并解压 `lld-link.exe` 的做法已移除。
 - **"与官方安装一致"优先**：官方 rustup 在 MSVC 下**不写任何 cargo 配置**、使用系统 VS 的 `link.exe`。本包只在系统确实没有可用 MSVC 工具链时才偏离这一默认（写 LLD + 内置 SDK 的兜底配置），有 VS 的机器上与官方行为一致。不能用 `-C link-self-contained=+linker` 这类官方机制"零配置启用内置 LLD"——该选项目前仅在 `x86_64-unknown-linux-gnu` 上稳定，Windows MSVC 目标不适用（见 [rustc codegen-options](https://doc.rust-lang.org/rustc/codegen-options/index.html)）。
 - 暂存目录（`build/stage/rust`）根目录即安装后的 `C:\pf\rust`。组件 tar.gz 内层多一层版本目录、再内层才是真正的组件目录，且**内层目录名并不统一**：`rustc-<ver>-<host>.tar.gz` / `cargo-...` 里是 `rustc/`、`cargo/`（等于组件名），`rust-std-<ver>-<host>.tar.gz` 里却是 **target 后缀名** `rust-std-<target>/`。按 `Join-Path <版本目录> 'rust-std'` 取会落空；一旦 fallback 成"整个版本目录"，载荷就被多套一层（std 落到 `<stage>\rust-std-<target>\lib\rustlib\<target>\lib`），而 rustc 的 sysroot 是 `bin\` 的父目录、期望 `<stage>\lib\rustlib\<target>\lib`，`cargo build` 于是报 `error[E0463]: can't find crate for 'std'`，还误导性地提示 `rustup target add …`（其实 rust-std 已合并）。因此解包后一律按"版本目录下唯一的子目录"通用取（优先匹配 `组件名` 或 `组件名-*`），合并后立即断言 `lib\rustlib\<target>\lib` 存在，把 E0463 提前成明确报错。
@@ -114,9 +118,13 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
   1. 暂存 `rustc.exe --version` 必须与解析出的版本号逐字一致；
   2. 暂存 `cargo.exe --version` 退出码为 0；
   3. 暂存 `lld-link.exe --version` 退出码为 0（就地调用即证明包装器能找到 `rust-lld` 子进程）；
-  4. **真实 `cargo new` + `cargo build --release`**：用临时 `CARGO_HOME` 写指向内置 `lld-link` 与三个 SDK 库目录的 config，清空 `RUSTC` / `RUSTUP_*` 环境变量后构建一个二进制 crate，必须产出 `helloworld.exe`。这是"免 VS 可编译"的端到端证明。
-  5. 暂存 `bin\rustfmt.exe --version` 退出码必须为 0，且 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`、`bin\cargo-clippy.exe`、`bin\clippy-driver.exe` 四个文件必须存在（合并布局错误在此提前暴露）。
-  6. 在冒烟 crate 上真实执行 `cargo fmt --check` 与 `cargo clippy`：前者证明 `cargo-fmt` 能经 PATH 被 cargo 解析且代码通过格式检查，后者证明 clippy 能真实 lint 该 crate。任一失败即 throw。
+  4. `rustc -vV` 必须报 `host: x86_64-pc-windows-msvc`，`rustc --print sysroot` 必须**等于暂存树根**——排除 rustc 把 sysroot 解析到机器上别的工具链；
+  5. **真实 `cargo new` + `cargo build --release -v`**：用临时 `CARGO_HOME` 写指向内置 `lld-link` 与三个 SDK 库目录的 config，清空 `RUSTC` / `RUSTUP_*` 环境变量后构建一个二进制 crate，必须产出 `helloworld.exe`；
+     - 冒烟 crate 的 `main.rs` 被替换为**真实调用 Win32 API** 的最小程序（`#[link(name = "iphlpapi")]` + `GetNumberOfInterfaces`）：`iphlpapi.lib` 不在 std 默认链接集里，能链上就证明 `sdk\lib\um\x86_64` 的 `-L` 路径确实生效（旧版只验"能编译"的 hello world，std 自带的默认依赖可能掩盖 UM 路径错误）；
+     - `-v` 的 rustc 命令行里必须出现暂存的 `gcc-ld\lld-link.exe`，否则说明 cargo 没吃到兜底 config（在有 VS 的 runner 上，配置被忽略也会"构建成功"，这条断言专门堵住这种假阳性）；
+     - 构建出的 exe 必须**实际运行**并以 0 退出、输出 `ifaces=<n>`。
+  6. 暂存 `bin\rustfmt.exe --version` 退出码必须为 0，且 `bin\rustfmt.exe`、`bin\cargo-fmt.exe`、`bin\cargo-clippy.exe`、`bin\clippy-driver.exe` 四个文件必须存在（合并布局错误在此提前暴露）。
+  7. 在冒烟 crate 上真实执行 `cargo fmt --check` 与 `cargo clippy`：前者证明 `cargo-fmt` 能经 PATH 被 cargo 解析且代码通过格式检查，后者证明 clippy 能真实 lint 该 crate。任一失败即 throw。
 - **本地安装闭环验证**：静默安装到**非默认目录** → 用注册表 Machine+User PATH 拼出新进程环境验证裸命令 `rustc` / `cargo` → 按本机环境核对 cargo 配置（无系统 MSVC 工具链时 `%USERPROFILE%\.cargo\config.toml` 应出现指向实际安装目录的目标段；有则不应出现本段）→ 核对 `HKCU\Environment` 的 `Path` 是否含 `%USERPROFILE%\.cargo\bin` → 静默卸载 → 确认文件、系统 PATH 条目、本安装器新增的用户 PATH 条目与 config 目标段都消失。
 
 ## 7. 已知限制
@@ -126,3 +134,5 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
   - 提示：`cargo build` 的 debug profile 默认已带 `debug = true`（等价 `-C debuginfo=2`）；release 默认 `-C debuginfo=0`，如需发布版也能调试可显式设 `[profile.release] debug = true`。
 - **含 C 依赖的 crate**：包内不提供 `clang-cl`，此类 crate 需自行准备 C 编译器（如另装 LLVM）。`cc` crate 在 MSVC 目标下优先找 `cl.exe`。
 - **兜底 cargo 配置为当前用户级**（仅在没有系统 MSVC 工具链的机器上出现）：`config.toml` 写在执行安装的用户的 `%USERPROFILE%` 下；同一机器的**其他用户**没有该段配置，其 `cargo build` 需自行补 `linker` / `rustflags`（机器级方案未落地）。用户 PATH 条目（`%USERPROFILE%\.cargo\bin`）同样只作用于执行安装的用户。
+- **提权到其他管理员账户时 HKCU 会写错人**：安装器需要管理员权限，若用户通过 UAC"输入另一位管理员账户"提权，则 `%USERPROFILE%` 与 `HKCU\Environment` 都属于那位管理员，真正的日常用户既不会得到 `.cargo\bin` 用户 PATH，也得不到兜底 `config.toml`（系统 PATH 与文件本身不受影响）。要修复得在 Inno 中枚举登录会话并写入原用户 hive，目前未实现。
+- **与官方 rustup 共存时的可见性**：用户级 PATH 在有效 PATH 中排在系统 PATH 之前，若机器上已装 rustup，`%USERPROFILE%\.cargo\bin\rustc.exe` 垫片会先命中，本包的 `C:\pf\rust\bin` 被遮蔽（`rustc -vV` 显示 rustup 选中的工具链）。这是 rustup 的既有设计，本包不改写 rustup 的 `settings.toml`；判断当前生效的是哪一个用 `where rustc` / `rustc --print sysroot`。

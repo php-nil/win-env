@@ -28,6 +28,8 @@ jobs:
   build-and-release:
     name: Build installer and publish release
     runs-on: windows-latest
+    # 下载 + xwin SDK 提取 + 完整 cargo 冒烟 + ISCC 压缩属长任务，给个上限避免悬挂占用 runner
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -53,7 +55,8 @@ jobs:
         id: build
         shell: powershell
         env:
-          # xwin 的版本发现走 GitHub Releases API，显式注入 token 提高速率限额（见 lessons §8）
+          # build.ps1 会把它作为 Authorization 头发给 GitHub Releases API：
+          # 匿名请求 60 次/小时，共享 runner IP 常年 403（见 doc/lessons.md §8）
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           & .\builders\rust\build.ps1 -RustVersion '${{ inputs.rust_version }}'

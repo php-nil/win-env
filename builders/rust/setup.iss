@@ -86,6 +86,11 @@ const
   // Pascal Script does NOT allow a local `const` block inside a procedure,
   // so this shared literal lives in the global const section.
   CargoSectionHeader = '[target.x86_64-pc-windows-msvc]';
+  // Written as the first line of our generated section. Uninstall only removes
+  // a section carrying this marker, so a hand-written
+  // [target.x86_64-pc-windows-msvc] block belonging to the user (e.g. custom
+  // rustflags) is never deleted by an uninstall.
+  CargoMarker = '# win-env: fallback linker config (removed on uninstall)';
   // A single-quote character. Building TOML literal strings with Q avoids
   // fragile runs of quotes that are hard to keep balanced by hand.
   Q = '''';
@@ -302,7 +307,7 @@ var
   SectionStart, SectionEnd: Integer;
   Lines: TArrayOfString;
   I, J: Integer;
-  Success: Boolean;
+  Success, Owned: Boolean;
 begin
   ConfigPath := ExpandConstant('{userprofile}\.cargo\config.toml');
   AppDir := ExpandConstant('{app}');
@@ -315,6 +320,7 @@ begin
   SdkVc := '{#SdkVcPath}';
 
   NewSection := CargoSectionHeader + #13#10 +
+                CargoMarker + #13#10 +
                 'linker = ' + Q + AppDir + '\' + '{#SdkLldPath}' + Q + #13#10 +
                 'rustflags = [' + #13#10 +
                 '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUcrtPath}' + Q + ',' + #13#10 +
@@ -364,6 +370,21 @@ begin
   Content := '';
   if SectionStart >= 0 then
   begin
+    // Never overwrite a target section the user wrote themselves: it may carry
+    // their own linker/rustflags. Only a section carrying our marker is ours.
+    Owned := False;
+    for J := SectionStart to SectionEnd - 1 do
+      if Trim(Lines[J]) = CargoMarker then
+      begin
+        Owned := True;
+        Break;
+      end;
+    if not Owned then
+    begin
+      Log('Existing target section was not written by win-env - kept as-is, fallback config NOT applied');
+      Exit;
+    end;
+
     // Preserve lines before our section, insert new content, preserve lines after.
     for I := 0 to SectionStart - 1 do
       Content := Content + Lines[I] + #13#10;
@@ -396,6 +417,7 @@ var
   ConfigPath, Content: String;
   Lines: TArrayOfString;
   I, J, SectionStart, SectionEnd: Integer;
+  Owned: Boolean;
 begin
   ConfigPath := ExpandConstant('{userprofile}\.cargo\config.toml');
   if not FileExists(ConfigPath) then
@@ -426,6 +448,21 @@ begin
   // Our section is absent: leave the user's file untouched.
   if SectionStart < 0 then
     Exit;
+
+  // Only remove a section we generated. A [target.x86_64-pc-windows-msvc]
+  // block written by the user (custom rustflags, another tool) must survive.
+  Owned := False;
+  for J := SectionStart to SectionEnd - 1 do
+    if Trim(Lines[J]) = CargoMarker then
+    begin
+      Owned := True;
+      Break;
+    end;
+  if not Owned then
+  begin
+    Log('Existing target section was not written by win-env - left untouched');
+    Exit;
+  end;
 
   Content := '';
   for I := 0 to SectionStart - 1 do
@@ -567,11 +604,6 @@ begin
       RegWriteDWordValue(HKCU, PathStateRegKey, PathStateValue, 1)
     else
       RegWriteDWordValue(HKCU, PathStateRegKey, PathStateValue, 0);
-    // Remove the staged placeholder cargo config from the install dir: the real
-    // one belongs in {userprofile}\.cargo\config.toml, and only when the machine
-    // has no usable MSVC toolchain (see ConfigureCargoToolchain).
-    if FileExists(ExpandConstant('{app}\.cargo\config.toml')) then
-      DeleteFile(ExpandConstant('{app}\.cargo\config.toml'));
     ConfigureCargoToolchain;
   end;
 end;
@@ -589,5 +621,9 @@ begin
       UpdateUserPath(CargoBinEntry, False);
       RegDeleteValue(HKCU, PathStateRegKey, PathStateValue);
     end;
+    // Drop our bookkeeping key when it is empty, so uninstall leaves nothing
+    // behind under HKCU\Software\win-env\rust.
+    RegDeleteKeyIfEmpty(HKCU, PathStateRegKey);
+    RegDeleteKeyIfEmpty(HKCU, 'Software\win-env');
   end;
 end;
