@@ -648,11 +648,17 @@ fn main() {
     # rustfmt / clippy through cargo's external-subcommand resolution: this
     # proves bin\cargo-fmt.exe and bin\cargo-clippy.exe are reachable via PATH
     # and that both tools really run (clippy lints the crate, fmt verifies it).
-    & $cargoExe fmt --check 2>&1 | ForEach-Object { Write-Host "  cargo fmt : $_" }
-    if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed with exit code $LASTEXITCODE" }
+    # Both must run from the crate dir (or be given --manifest-path), otherwise
+    # cargo looks for Cargo.toml in the smoke parent dir and exits 1.
+    Push-Location $smokeProj
+    try {
+        & $cargoExe fmt --check 2>&1 | ForEach-Object { Write-Host "  cargo fmt : $_" }
+        if ($LASTEXITCODE -ne 0) { throw "cargo fmt --check failed with exit code $LASTEXITCODE" }
 
-    & $cargoExe clippy 2>&1 | ForEach-Object { Write-Host "  cargo clippy : $_" }
-    if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed with exit code $LASTEXITCODE" }
+        & $cargoExe clippy 2>&1 | ForEach-Object { Write-Host "  cargo clippy : $_" }
+        if ($LASTEXITCODE -ne 0) { throw "cargo clippy failed with exit code $LASTEXITCODE" }
+    }
+    finally { Pop-Location }
     Write-Host "  smoke rustfmt/clippy OK"
 }
 finally {
