@@ -15,7 +15,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 产物文件 | `rust-<version>-msvc-setup-x64.exe`（LZMA2 固实压缩 + 128 MB 字典；1.99.1 官方默认组件归档合计 265.6 MiB / 278.5 MB，安装包 220–240 MiB 量级，精确值以 CI 产物为准） |
+| 产物文件 | `rust-<version>-msvc-setup-x64.exe`（LZMA2 固实压缩 + 128 MB 字典；1.99.1 官方默认组件归档合计 265.6 MiB / 278.5 MB，暂存树 2,021,339,090 字节 / 1.88 GiB，实测安装包 188,604,563 字节 / 179.9 MiB） |
 | 附带文件 | `*.exe.sha256.txt`（校验值）、`build-info.json`（版本/来源元数据）、`release-notes.md`（Release 正文） |
 | Release 标签 | `rust-<version>-msvc`；另有常青别名 `rust-latest`（资产名固定 `rust-setup-x64.exe`，README 下载链接指向它） |
 | 规格 | 官方 Rust **`default` profile** 全部组件（`rustc` / `cargo` / `rust-std` / `rust-docs` / `rustfmt-preview` / `clippy-preview`）· x86_64-pc-windows-msvc · stable channel |
