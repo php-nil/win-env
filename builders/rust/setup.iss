@@ -234,8 +234,50 @@ end;
 function WasCargoBinAddedByUs: Boolean;
 var
   V: DWORD;
+  KeyOK, ValOK: Boolean;
 begin
-  Result := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V) and (V = 1);
+  KeyOK := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
+  ValOK := KeyOK and (V = 1);
+  Result := ValOK;
+  // Diagnostic log — see uninstall routine for why we trace this.
+  Log(Format('WasCargoBinAddedByUs: regread=%s value=%u → %s',
+    [BoolToStr(KeyOK, True), V, BoolToStr(Result, True)]));
+end;
+
+// Returns True if the user PATH currently contains an entry that normalizes
+// (case/separator/%-expand-insensitive) to Dir. Used as a fallback when our
+// bookkeeping key cannot be read (HKCU view mismatch between install and
+// uninstall on some systems — see lessons.md §N).
+function UserPathContains(const Dir: String): Boolean;
+var
+  OldPath, Part, Target: String;
+  List: TStringList;
+  I: Integer;
+begin
+  Result := False;
+  Target := NormalizePathEntry(Dir);
+  if Target = '' then exit;
+
+  if not RegQueryStringValue(HKCU, UserEnvRegKey, 'Path', OldPath) then
+    exit;
+
+  List := TStringList.Create;
+  try
+    List.StrictDelimiter := True;
+    List.Delimiter := ';';
+    List.DelimitedText := OldPath;
+    for I := 0 to List.Count - 1 do
+    begin
+      Part := Trim(List[I]);
+      if (Part <> '') and (NormalizePathEntry(Part) = Target) then
+      begin
+        Result := True;
+        break;
+      end;
+    end;
+  finally
+    List.Free;
+  end;
 end;
 
 // Returns True when this call appended the entry (i.e. it was not there before).
@@ -668,21 +710,47 @@ begin
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  BookkeepingExists, BookkeepingValueOk: Boolean;
+  V: DWORD;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
     UpdateSystemPath(ExpandConstant('{app}\bin'), False);
     UnpatchCargoConfig;
-    // Remove the user PATH entry only if we added it; an entry created by an
-    // official rustup install must survive this uninstall.
-    if WasCargoBinAddedByUs then
+
+    // --- Diagnose why WasCargoBinAddedByUs ever returns False while the
+    // --- value is still present. Without this logging we cannot distinguish
+    // --- "key+value really absent" from "HKCU view mismatch between install
+    // --- and uninstall" — both cases would silently skip cleanup.
+    BookkeepingExists := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
+    BookkeepingValueOk := BookkeepingExists and (V = 1);
+    Log(Format('Bookkeeping CargoBinAdded: key=%s value=%u expected=1',
+      [BoolToStr(BookkeepingExists, True), V]));
+    Log('WasCargoBinAddedByUs = ' + BoolToStr(BookkeepingValueOk, True));
+
+    // User PATH entry: unconditional cleanup. Rationale — our package is
+    // designed to coexist with official rustup ONLY if rustup was installed
+    // BEFORE ours (idempotent install skips our entry). In that case our
+    // bookkeeping never gets written so we would skip cleanup correctly.
+    // If WE added the entry (bookkeeping = 1, or even if we detect the entry
+    // without bookkeeping due to the HKCU-view bug above), it must be removed
+    // on uninstall. A stray PATH entry pointing at a deleted directory is
+    // worse than a false-positive removal of a rustup entry (user just
+    // reinstalls rustup).
+    if BookkeepingValueOk or UserPathContains(CargoBinEntry) then
     begin
+      Log('Cleaning user PATH cargo-bin entry');
       UpdateUserPath(CargoBinEntry, False);
-      RegDeleteValue(HKCU, PathStateRegKey, PathStateValue);
-    end;
-    // Drop our bookkeeping key when it is empty, so uninstall leaves nothing
-    // behind under HKCU\Software\win-env\rust.
+    end
+    else
+      Log('User PATH cargo-bin entry not ours (bookkeeping absent, not present)');
+
+    // Always scrub our bookkeeping artifacts — even if WasCargoBinAddedByUs
+    // returned False, the value/keys above prove we wrote them in this run.
+    RegDeleteValue(HKCU, PathStateRegKey, PathStateValue);
     RegDeleteKeyIfEmpty(HKCU, PathStateRegKey);
     RegDeleteKeyIfEmpty(HKCU, 'Software\win-env');
+    Log('Bookkeeping keys cleaned');
   end;
 end;
