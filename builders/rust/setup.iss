@@ -140,7 +140,7 @@ var
   S: String;
 begin
   S := Trim(P);
-  StringChangeEx(S, '%USERPROFILE%', GetEnvironmentVariable('USERPROFILE'), False);
+  StringChangeEx(S, '%USERPROFILE%', ExpandConstant('{%USERPROFILE}'), False);
   Result := LowerCase(S);
   StringChangeEx(Result, '/', '\', True);
   while (Length(Result) > 3) and (Result[Length(Result)] = '\') do
@@ -323,7 +323,7 @@ var
   I, J: Integer;
   Success, Owned: Boolean;
 begin
-  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
+  ConfigPath := ExpandConstant('{%USERPROFILE}') + '\.cargo\config.toml';
   AppDir := ExpandConstant('{app}');
   StringChangeEx(AppDir, '/', '\', True);
 
@@ -433,7 +433,7 @@ procedure VerifyCargoFallback;
 var
   ConfigPath, Content: String;
 begin
-  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
+  ConfigPath := ExpandConstant('{%USERPROFILE}') + '\.cargo\config.toml';
   if not FileExists(ConfigPath) then
   begin
     Log('FALLBACK CONFIG MISSING: ' + ConfigPath);
@@ -469,7 +469,7 @@ var
   I, J, SectionStart, SectionEnd: Integer;
   Owned: Boolean;
 begin
-  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
+  ConfigPath := ExpandConstant('{%USERPROFILE}') + '\.cargo\config.toml';
   if not FileExists(ConfigPath) then
     Exit;
 
@@ -661,7 +661,7 @@ begin
     // The user PATH entry above points here. cargo would create it on the first
     // `cargo install`, but creating it now keeps the PATH entry valid and makes
     // `cargo install --list` / editor probes behave predictably.
-    if not ForceDirectories(GetEnvironmentVariable('USERPROFILE') + '\.cargo\bin') then
+    if not ForceDirectories(ExpandConstant('{%USERPROFILE}') + '\.cargo\bin') then
       Log('Could not create %USERPROFILE%\.cargo\bin');
     ConfigureCargoToolchain;
   end;
