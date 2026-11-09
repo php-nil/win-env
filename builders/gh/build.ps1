@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Build the GitHub CLI (gh) one-click installer for Windows x64.
 
