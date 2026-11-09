@@ -467,7 +467,7 @@ end;
 // link.exe and fail with "link: extra operand"). Surface that loudly.
 procedure VerifyCargoFallback;
 var
-  ConfigPath, Content: String;
+  ConfigPath: String;
 begin
   ConfigPath := ExpandConstant('{%USERPROFILE}') + '\.cargo\config.toml';
   if not FileExists(ConfigPath) then
