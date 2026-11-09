@@ -41,6 +41,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
