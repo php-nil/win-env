@@ -68,6 +68,63 @@ jobs:
           Write-Host "rust version = ${{ steps.build.outputs.rust_version }}"
           Write-Host "Installer    = ${{ steps.build.outputs.setup_name }}"
 
+      # The runner has Visual Studio, so the installer would normally take the
+      # "system MSVC usable" branch and never write the fallback cargo config.
+      # /FORCEFALLBACK=1 installs to a scratch dir on purpose and proves the
+      # LLD + staged SDK path works after a real (silent) install — the exact
+      # path a user without Visual Studio gets.
+      - name: Install-test fallback linker on this runner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Join-Path $PWD "build\output\${{ steps.build.outputs.setup_name }}"
+          $testDir = 'C:\pf\rust-installtest'
+          $log = Join-Path $env:RUNNER_TEMP 'rust-install.log'
+          $cfg = Join-Path $env:USERPROFILE '.cargo\config.toml'
+          if (Test-Path $cfg) { Move-Item -Force $cfg "$cfg.pre-installtest" }
+          Write-Host "Installing $setup to $testDir (forced fallback)"
+          $installer = Start-Process -FilePath $setup -Wait -PassThru -ArgumentList @(
+            '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/FORCEFALLBACK=1',
+            "/DIR=$testDir", "/LOG=$log")
+          if ($installer.ExitCode -ne 0) {
+            if (Test-Path $log) { Get-Content $log -Tail 120 }
+            throw "Installer exited with $($installer.ExitCode)"
+          }
+          if (-not (Test-Path $cfg)) { throw "fallback cargo config was not written: $cfg" }
+          if (-not (Select-String -Path $cfg -Pattern 'win-env: fallback linker config' -Quiet)) {
+            throw "fallback marker missing from $cfg"
+          }
+          $rustLld = Join-Path $testDir 'lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe'
+          $src = Join-Path $env:RUNNER_TEMP 'rust-fallback-smoke'
+          if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+          New-Item -ItemType Directory -Force $src | Out-Null
+          $env:PATH = "$testDir\bin;$env:PATH"
+          $cargo = Join-Path $testDir 'bin\cargo.exe'
+          $proj = Join-Path $src 'smoke'
+          $manifest = Join-Path $proj 'Cargo.toml'
+          $prevEap = $ErrorActionPreference
+          $ErrorActionPreference = 'Continue'
+          try {
+            & $cargo new --bin --vcs none $proj 2>&1 | ForEach-Object { Write-Host "  cargo new: $_" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo new failed' }
+            $buildLog = & $cargo build --manifest-path $manifest -v 2>&1
+            $buildLog | ForEach-Object { Write-Host "  cargo build: $_" }
+            if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+            # Only the installed config can make cargo pass our absolute
+            # rust-lld path; a random link.exe from PATH would not appear here.
+            if (-not (($buildLog -join "`n").Contains($rustLld))) {
+              throw "cargo did not use the installed rust-lld: $rustLld"
+            }
+            & (Join-Path $proj 'target\debug\smoke.exe')
+            if ($LASTEXITCODE -ne 0) { throw 'installed smoke exe failed' }
+            & (Join-Path $testDir 'bin\rust-analyzer.exe') --version
+            if ($LASTEXITCODE -ne 0) { throw 'rust-analyzer failed' }
+          }
+          finally {
+            $ErrorActionPreference = $prevEap
+          }
+          Write-Host 'Install-test fallback linker: OK'
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
         with:

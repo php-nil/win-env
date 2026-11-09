@@ -54,6 +54,20 @@ $OutDir   = Join-Path $BuildDir 'output'
 $ChannelUrl = 'https://static.rust-lang.org/dist/channel-rust-stable.toml'
 $Target     = 'x86_64-pc-windows-msvc'
 
+# VC++ runtime DLLs released app-local into bin\ (which is on the system PATH).
+# Rust's MSVC target links the dynamic CRT, so every produced .exe imports
+# VCRUNTIME140.dll; Windows 10/11 ships the UCRT but NOT the VC++ runtime, and
+# this package deliberately works without Visual Studio. Staging the DLLs in
+# bin\ makes `cargo run` and target\debug\*.exe work on a clean machine without
+# the VC++ Redistributable. Same official source/extraction as the PHP package.
+$VcRedistUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+$WixZipUrl   = 'https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip'
+$VcRuntimeDlls = @(
+    'vcruntime140.dll', 'vcruntime140_1.dll',
+    'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+    'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll'
+)
+
 # LLD comes from the rustc component itself (no LLVM download): rustc ships a
 # self-contained LLD whose universal driver is rust-lld.exe (the gcc-ld\*.exe
 # files are per-flavor wrappers around it). See section 4 below.
@@ -171,7 +185,7 @@ function Get-ChannelInfo([string]$Url) {
             continue
         }
 
-        if ($currentSection -match ('^pkg\.(?<comp>rustc|cargo|rust-std|rust-docs|clippy-preview|rustfmt-preview)\.target\.' + [regex]::Escape($Target) + '$')) {
+        if ($currentSection -match ('^pkg\.(?<comp>rustc|cargo|rust-std|rust-docs|clippy-preview|rustfmt-preview|rust-analyzer-preview)\.target\.' + [regex]::Escape($Target) + '$')) {
             # Capture the component name NOW — the url/hash regexes below
             # overwrite $Matches.
             $comp = $Matches['comp']
@@ -214,7 +228,11 @@ Write-Host "  Rust version : $rustVersion (channel date: $rustDate)"
 # install it on an MSVC host either — verified against the live channel TOML.)
 # Keep this list in lock-step with the official default profile: omitting
 # rust-docs made the package diverge from `rustup default stable`.
-$componentNames = @('rustc', 'cargo', 'rust-std', 'rust-docs', 'clippy-preview', 'rustfmt-preview')
+# rust-analyzer-preview is NOT part of the official default profile, but this is
+# a development environment: without it VS Code / Qoder cannot run the language
+# server, and users would have to download a matching binary by hand. It is in
+# the `complete` profile and published for every supported target.
+$componentNames = @('rustc', 'cargo', 'rust-std', 'rust-docs', 'clippy-preview', 'rustfmt-preview', 'rust-analyzer-preview')
 $components = @()
 foreach ($name in $componentNames) {
     $url  = $channel.Urls[$name]
@@ -273,7 +291,11 @@ foreach ($comp in $components) {
     # dir itself nests the payload one level too deep, and rustc then cannot
     # find std (error E0463: can't find crate for `std`).
     $innerDir = Get-ChildItem -Directory $versionDir.FullName |
-        Where-Object { $_.Name -eq $comp.Name -or $_.Name -like "$($comp.Name)-*" } |
+        Where-Object {
+            $_.Name -eq $comp.Name -or
+            $_.Name -like "$($comp.Name)-*" -or
+            $_.Name -eq ($comp.Name -replace '-preview$', '')
+        } |
         Select-Object -First 1
     if (-not $innerDir) {
         $innerDir = Get-ChildItem -Directory $versionDir.FullName | Select-Object -First 1
@@ -302,6 +324,11 @@ foreach ($rel in @('bin\rustfmt.exe', 'bin\cargo-fmt.exe', 'bin\cargo-clippy.exe
     $p = Join-Path $StageDir $rel
     if (-not (Test-Path $p)) { throw "$rel missing after merge (rustfmt/clippy component)" }
 }
+# The language server is what editors (VS Code rust-analyzer, Qoder, RustRover)
+# spawn. It must sit in bin\ so editor toolchain discovery and PATH lookup find
+# the exact compiler version it was built against.
+$rustAnalyzerExe = Join-Path $StageDir 'bin\rust-analyzer.exe'
+if (-not (Test-Path $rustAnalyzerExe)) { throw "bin\rust-analyzer.exe missing after merge (rust-analyzer-preview component)" }
 # Fail fast if rust-std landed at the wrong level. rustc's sysroot is the parent
 # of bin\, so std must sit at lib\rustlib\<target>\lib. Checking here turns a
 # cryptic `E0463: can't find crate for std` at cargo-build time into a clear error.
@@ -315,6 +342,18 @@ if (-not (Test-Path $stdLibDir)) {
 # books (the `rustup doc` equivalent) would be missing.
 $docsHtmlDir = Join-Path $StageDir 'share\doc\rust\html'
 if (-not (Test-Path $docsHtmlDir)) { throw "rust-docs payload missing: $docsHtmlDir" }
+
+# rust-installer bookkeeping (manifest.in and friends) is consumed by rustup at
+# install time, never at runtime. The rustc/rust-std archives carry none, but
+# each *-preview component ships a root manifest.in and the overlay merge leaves
+# the last one behind; official rustup toolchains do not expose it either.
+foreach ($rel in @('manifest.in', 'components', 'rust-installer-version')) {
+    $p = Join-Path $StageDir $rel
+    if (Test-Path $p) {
+        Remove-Item -Force $p
+        Write-Host "  pruned installer metadata: $rel"
+    }
+}
 
 # ---------------------------------------------------------------------------
 # 3b. Drop debug symbols for tools this package never invokes.
@@ -457,6 +496,54 @@ if ($left.Count) {
 }
 
 # ---------------------------------------------------------------------------
+# 5c. Stage VC++ runtime DLLs into bin\ (no Visual Studio / VC redist needed)
+#     The MSVC target links the dynamic CRT, so every binary produced by this
+#     toolchain imports VCRUNTIME140.dll. Windows 10/11 ships the UCRT but not
+#     the VC++ runtime; CI runners pass the smoke run only because Visual Studio
+#     is preinstalled there, while a clean target machine would fail at
+#     `cargo run` with "VCRUNTIME140.dll was not found".
+#     bin\ is on the system PATH, so the loader finds these DLLs for any
+#     target\debug\*.exe without copying DLLs next to every build output.
+#     Source and extraction path mirror the PHP package (official vc_redist,
+#     WiX dark.exe + msiexec /a; 7-Zip cannot open the Burn bundle).
+# ---------------------------------------------------------------------------
+Write-Step 'Staging VC++ runtime DLLs (app-local in bin\)'
+# aka.ms/vs/17/release tracks the latest 14.x runtime: never reuse a cached
+# copy, or the package would silently pin an outdated CRT.
+$vcRedistExe = Join-Path $CacheDir 'vc_redist.x64.exe'
+if (Test-Path $vcRedistExe) { Remove-Item -Force $vcRedistExe }
+Download-File $VcRedistUrl $vcRedistExe
+$vcRedistVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($vcRedistExe).FileVersion
+Write-Host "  VC++ runtime : $vcRedistVersion"
+
+$wixZip = Join-Path $CacheDir 'wix314-binaries.zip'
+Download-File $WixZipUrl $wixZip
+$wixDir = Join-Path $CacheDir 'wix314'
+if (-not (Test-Path (Join-Path $wixDir 'dark.exe'))) {
+    if (Test-Path $wixDir) { Remove-Item -Recurse -Force $wixDir }
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($wixZip, $wixDir)
+}
+$vcX = Join-Path $CacheDir 'vcredist-x'
+if (Test-Path $vcX) { Remove-Item -Recurse -Force $vcX }
+& (Join-Path $wixDir 'dark.exe') -nologo -x $vcX $vcRedistExe
+if ($LASTEXITCODE -ne 0) { throw "dark.exe failed with exit code $LASTEXITCODE" }
+$vcMsi = Join-Path $vcX 'AttachedContainer\packages\vcRuntimeMinimum_amd64\vc_runtimeMinimum_x64.msi'
+if (-not (Test-Path $vcMsi)) { throw 'vc_runtimeMinimum_x64.msi not found in redist bundle' }
+$vcOut = Join-Path $vcX 'out-min'
+$msiProc = Start-Process -FilePath 'msiexec.exe' -Wait -PassThru `
+    -ArgumentList @('/a', "`"$vcMsi`"", '/qn', "TARGETDIR=`"$vcOut`"")
+if ($msiProc.ExitCode -ne 0) { throw "msiexec /a failed with exit code $($msiProc.ExitCode)" }
+$stageBin = Join-Path $StageDir 'bin'
+foreach ($dll in $VcRuntimeDlls) {
+    $src = Join-Path $vcOut "System64\$dll"
+    if (-not (Test-Path $src)) { throw "$dll not found in extracted VC++ runtime" }
+    Copy-Item -Force $src (Join-Path $stageBin $dll)
+    $fv = [Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $stageBin $dll)).FileVersion
+    if ($fv -notmatch '^14\.') { throw "Unexpected VC++ runtime version for ${dll}: $fv" }
+}
+Write-Host "  $($VcRuntimeDlls.Count) CRT DLLs staged in bin\ (runtime $vcRedistVersion)"
+
+# ---------------------------------------------------------------------------
 # 6. Smoke test (mandatory)
 # ---------------------------------------------------------------------------
 Write-Step 'Smoke testing staged rustc / cargo / rust-lld'
@@ -476,6 +563,10 @@ $lldCode = $LASTEXITCODE
 # cargo shim): proves bin\rustfmt.exe was merged and is executable.
 $rustfmtOut = (& (Join-Path $StageDir 'bin\rustfmt.exe') --version 2>&1) -join "`n"
 $rustfmtCode = $LASTEXITCODE
+# rust-analyzer must run from the staged tree: editors launch it by absolute
+# path from bin\, and it resolves rustc/sysroot through its own location.
+$rustAnalyzerOut = (& $rustAnalyzerExe --version 2>&1) -join "`n"
+$rustAnalyzerCode = $LASTEXITCODE
 # `-vV` reports the host triple and `--print sysroot` the std/LLD root. Both
 # come from rustc itself, so they catch a staged rustc that silently resolves
 # its sysroot to some other toolchain on the machine.
@@ -492,6 +583,7 @@ if ($rustcCode -ne 0 -or $rustcOut -notmatch "rustc $rustVersionRe") {
 if ($cargoCode -ne 0) { throw "cargo failed: $cargoOut" }
 if ($lldCode -ne 0) { throw "rust-lld failed: $lldOut" }
 if ($rustfmtCode -ne 0) { throw "rustfmt failed: $rustfmtOut" }
+if ($rustAnalyzerCode -ne 0) { throw "rust-analyzer failed: $rustAnalyzerOut" }
 if ($rustcVvCode -ne 0 -or $rustcVvOut -notmatch ('(?m)^host: ' + [regex]::Escape($Target) + '$')) {
     throw "rustc -vV does not report host $Target :`n$rustcVvOut"
 }
@@ -505,6 +597,7 @@ Write-Host "  $rustcOut"
 Write-Host "  $cargoOut"
 Write-Host "  rust-lld $lldOut"
 Write-Host "  $rustfmtOut"
+Write-Host "  $rustAnalyzerOut"
 
 # ---------------------------------------------------------------------------
 # 6b. Locate SDK library paths (relative to install root = StageDir).
@@ -738,7 +831,9 @@ $buildInfo = [ordered]@{
     defaultPath     = 'C:\pf\rust'
     pathEntries     = @('C:\pf\rust\bin', '%USERPROFILE%\.cargo\bin')
     components      = @($components | ForEach-Object { $_.Name })
-    commands        = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy')
+    commands        = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy', 'rust-analyzer')
+    vcRedistVersion = $vcRedistVersion
+    vcRuntimeDlls   = $VcRuntimeDlls
     prunedPdbBytes  = $prunedPdbBytes
     stageBytes      = $stageBytes
     builtAt         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -765,25 +860,29 @@ if (-not $SkipCompile) {
 | rust-docs | 随 Rust $rustVersion（官方 rust-docs 组件，HTML 文档位于 ``<安装目录>\share\doc\rust\html``） |
 | rustfmt | 随 Rust $rustVersion（官方 rustfmt-preview 组件，含 cargo-fmt） |
 | clippy | 随 Rust $rustVersion（官方 clippy-preview 组件，含 clippy-driver） |
+| rust-analyzer | 随 Rust $rustVersion（官方 rust-analyzer-preview 组件，供 VS Code / Qoder 语言服务使用） |
 | 目标 | x86_64-pc-windows-msvc |
 | LLD | $lldVer（rustc 官方组件内置 rust-lld 通用驱动，经 ``-flavor link`` 运行） |
 | xwin | $XwinVersion（提取 Windows SDK / CRT） |
+| VC++ 运行库 | $vcRedistVersion（app-local：$($VcRuntimeDlls.Count) 个 CRT DLL 释放到 ``bin\``，干净机器无需预装 VC++ Redistributable） |
 
 ## 默认行为
 
 - 默认安装目录：``C:\pf\rust``（安装向导中可修改）
-- 安装后自动将 ``C:\pf\rust\bin`` 加入系统 PATH，新开命令行可直接使用 ``rustc``、``cargo``、``rustfmt``、``cargo fmt``、``cargo clippy``
+- 安装后自动将 ``C:\pf\rust\bin`` 加入系统 PATH，新开命令行可直接使用 ``rustc``、``cargo``、``rustfmt``、``cargo fmt``、``cargo clippy``、``rust-analyzer``
 - 同时把 ``%USERPROFILE%\.cargo\bin`` 加入用户 PATH（与官方 rustup 的做法一致），使 ``cargo install`` 装出的子命令可直接按名调用；卸载时仅回收由本安装器新增的条目
 - 安装器在安装时探测系统 MSVC 工具链（VS C++ 工具 + Windows SDK）：
   - 探测到：完全按官方默认，**不写任何 cargo 配置**，rustc 自行发现 ``link.exe`` 与 SDK 库
-  - 探测不到：启用包内 LLD（rustc 自带 rust-lld）与内置 Windows SDK / CRT 库（经 xwin 从微软官方 CDN 提取），并写入 ``%USERPROFILE%\.cargo\config.toml`` 配置链接器与库路径（卸载时回收该配置段）
+  - 探测不到：启用包内 LLD（rustc 自带 rust-lld）与内置 Windows SDK / CRT 库（经 xwin 从微软官方 CDN 提取），并写入 ``%USERPROFILE%\.cargo\config.toml`` 配置链接器与库路径（卸载时回收该配置段）；安装器会回读并校验该文件，写入失败会明确告警
 - 安装/卸载对系统 PATH 均为幂等精确操作，不改动其他条目
 
 ## 重要说明
 
 - 本包包含从微软官方 CDN 提取的 CRT/SDK 文件，用户需确认符合微软许可条款
 - 链接器为 LLD（rustc 自带 rust-lld）：官方文档声明其 PDB 与原生 link.exe 同级，仅不支持已废弃的 /DEBUG:FASTLINK；超大 PDB 场景下 LLD 反而更稳
-- 含 C 依赖的 crate 需自行配置 ``CC=clang-cl`` 及头文件路径
+- 若 ``cargo build`` 报 ``linking with `link.exe` failed``（尤其是 ``link: extra operand``），说明回退配置未生效：检查 ``%USERPROFILE%\.cargo\config.toml`` 是否存在且包含 ``# win-env: fallback linker config`` 标记；Git 自带的 ``usr\bin\link.exe`` 会抢先解析到 GNU link，必须由该配置把链接器指向 rust-lld
+- 产物依赖 ``VCRUNTIME140.dll``：本包已将其释放到 ``bin\``（在 PATH 中），干净机器无需安装 VC++ Redistributable；如仍需系统级安装，可自行运行微软 vc_redist.x64.exe
+- 含 C 依赖的 crate 需自行配置 ``CC=clang-cl`` 及头文件路径（本包不含 C/C++ 编译器）
 
 ## 校验
 

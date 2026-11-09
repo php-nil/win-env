@@ -109,6 +109,17 @@ const
 
 var
   EnvMsgResult: DWORD;
+  // Test hook (/FORCEFALLBACK=1): use the bundled LLD + staged SDK even when a
+  // system MSVC toolchain is present. CI runners ship Visual Studio, so without
+  // this switch the fallback path (the entire reason this package exists) is
+  // never exercised by an install test.
+  ForceCargoFallback: Boolean;
+
+function InitializeSetup(): Boolean;
+begin
+  ForceCargoFallback := ExpandConstant('{param:FORCEFALLBACK|0}') = '1';
+  Result := True;
+end;
 
 procedure SendMessageTimeout(hWnd: Integer; Msg: Integer; wParam: Integer;
   lParam: String; fuFlags: Integer; uTimeout: Integer; var lpdwResult: DWORD);
@@ -129,7 +140,7 @@ var
   S: String;
 begin
   S := Trim(P);
-  StringChangeEx(S, '%USERPROFILE%', ExpandConstant('{%USERPROFILE}'), False);
+  StringChangeEx(S, '%USERPROFILE%', GetEnvironmentVariable('USERPROFILE'), False);
   Result := LowerCase(S);
   StringChangeEx(Result, '/', '\', True);
   while (Length(Result) > 3) and (Result[Length(Result)] = '\') do
@@ -312,7 +323,7 @@ var
   I, J: Integer;
   Success, Owned: Boolean;
 begin
-  ConfigPath := ExpandConstant('{userprofile}\.cargo\config.toml');
+  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
   AppDir := ExpandConstant('{app}');
   StringChangeEx(AppDir, '/', '\', True);
 
@@ -336,8 +347,11 @@ begin
 
   if not FileExists(ConfigPath) then
   begin
-    if not DirExists(ExtractFileDir(ConfigPath)) then
-      CreateDir(ExtractFileDir(ConfigPath));
+    if not ForceDirectories(ExtractFileDir(ConfigPath)) then
+    begin
+      Log('Failed to create cargo config directory: ' + ExtractFileDir(ConfigPath));
+      Exit;
+    end;
     Success := SaveStringToFile(ConfigPath, NewSection, False);
     if Success then
       Log('Cargo config created at ' + ConfigPath)
@@ -410,6 +424,39 @@ begin
     Log('Failed to write cargo config');
 end;
 
+// Read back what we just wrote. PatchCargoConfig deliberately preserves a
+// hand-written [target.x86_64-pc-windows-msvc] section, so "no marker" is not
+// always an error; a missing file, however, guarantees every `cargo build`
+// will fail with "linker `link.exe` not found" (or, worse, resolve Git's GNU
+// link.exe and fail with "link: extra operand"). Surface that loudly.
+procedure VerifyCargoFallback;
+var
+  ConfigPath, Content: String;
+begin
+  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
+  if not FileExists(ConfigPath) then
+  begin
+    Log('FALLBACK CONFIG MISSING: ' + ConfigPath);
+    if not WizardSilent then
+      MsgBox('The bundled linker configuration could not be written to:' + #13#10 +
+             ConfigPath + #13#10#13#10 +
+             'cargo build will fail until this is fixed. Re-run Setup with /LOG ' +
+             'and check the log for the cause.', mbError, MB_OK);
+    Exit;
+  end;
+  if not LoadStringFromFile(ConfigPath, Content) then
+  begin
+    Log('FALLBACK CONFIG UNREADABLE: ' + ConfigPath);
+    Exit;
+  end;
+  if Pos(CargoMarker, Content) = 0 then
+  begin
+    Log('FALLBACK CONFIG NOT APPLIED: existing [target.x86_64-pc-windows-msvc] section kept as-is (' + ConfigPath + ')');
+    Exit;
+  end;
+  Log('Fallback cargo config verified: ' + ConfigPath);
+end;
+
 // Reverse of PatchCargoConfig: strip our target section so the uninstalled
 // linker/library paths do not linger and break the user's later `cargo build`
 // (a leftover section pointing at a removed `rust-lld.exe` fails the link).
@@ -422,7 +469,7 @@ var
   I, J, SectionStart, SectionEnd: Integer;
   Owned: Boolean;
 begin
-  ConfigPath := ExpandConstant('{userprofile}\.cargo\config.toml');
+  ConfigPath := GetEnvironmentVariable('USERPROFILE') + '\.cargo\config.toml';
   if not FileExists(ConfigPath) then
     Exit;
 
@@ -578,7 +625,7 @@ end;
 // a no-op when nothing of ours is present.
 procedure ConfigureCargoToolchain;
 begin
-  if SystemMsvcUsable then
+  if (not ForceCargoFallback) and SystemMsvcUsable then
   begin
     Log('System MSVC toolchain detected - cargo config left untouched (official defaults)');
     // A previous install on a VS-less machine may have left our section behind,
@@ -588,8 +635,12 @@ begin
   end
   else
   begin
-    Log('No usable system MSVC toolchain - configuring bundled LLD + SDK library paths');
+    if ForceCargoFallback then
+      Log('FORCEFALLBACK=1 - configuring bundled LLD + SDK library paths')
+    else
+      Log('No usable system MSVC toolchain - configuring bundled LLD + SDK library paths');
     PatchCargoConfig;
+    VerifyCargoFallback;
   end;
 end;
 
@@ -607,6 +658,11 @@ begin
       RegWriteDWordValue(HKCU, PathStateRegKey, PathStateValue, 1)
     else
       RegWriteDWordValue(HKCU, PathStateRegKey, PathStateValue, 0);
+    // The user PATH entry above points here. cargo would create it on the first
+    // `cargo install`, but creating it now keeps the PATH entry valid and makes
+    // `cargo install --list` / editor probes behave predictably.
+    if not ForceDirectories(GetEnvironmentVariable('USERPROFILE') + '\.cargo\bin') then
+      Log('Could not create %USERPROFILE%\.cargo\bin');
     ConfigureCargoToolchain;
   end;
 end;
