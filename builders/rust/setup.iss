@@ -235,13 +235,14 @@ function WasCargoBinAddedByUs: Boolean;
 var
   V: DWORD;
   KeyOK, ValOK: Boolean;
+  KeyOKStr: String;
 begin
   KeyOK := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
   ValOK := KeyOK and (V = 1);
   Result := ValOK;
   // Diagnostic log — see uninstall routine for why we trace this.
-  Log(Format('WasCargoBinAddedByUs: regread=%s value=%u → %s',
-    [BoolToStr(KeyOK, True), V, BoolToStr(Result, True)]));
+  if KeyOK then KeyOKStr := 'True' else KeyOKStr := 'False';
+  Log('WasCargoBinAddedByUs: regread=' + KeyOKStr + ' value=' + IntToStr(V) + ' -> ' + IntToStr(Ord(Result)));
 end;
 
 // Returns True if the user PATH currently contains an entry that normalizes
@@ -725,9 +726,11 @@ begin
     // --- and uninstall" — both cases would silently skip cleanup.
     BookkeepingExists := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
     BookkeepingValueOk := BookkeepingExists and (V = 1);
-    Log(Format('Bookkeeping CargoBinAdded: key=%s value=%u expected=1',
-      [BoolToStr(BookkeepingExists, True), V]));
-    Log('WasCargoBinAddedByUs = ' + BoolToStr(BookkeepingValueOk, True));
+    if BookkeepingExists then
+      Log('Bookkeeping CargoBinAdded: key=True value=' + IntToStr(V) + ' expected=1')
+    else
+      Log('Bookkeeping CargoBinAdded: key=False (value=0 default)');
+    Log('WasCargoBinAddedByUs = ' + IntToStr(Ord(BookkeepingValueOk)));
 
     // User PATH entry: unconditional cleanup. Rationale — our package is
     // designed to coexist with official rustup ONLY if rustup was installed
