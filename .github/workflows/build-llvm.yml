@@ -1,0 +1,104 @@
+name: Build LLVM
+
+on:
+  schedule:
+    # 每周一 04:00（北京时间 UTC+8）；cron 以 UTC 表达 → 周日 20:00
+    - cron: '0 20 * * 0'
+  workflow_dispatch:
+    inputs:
+      llvm_version:
+        description: 'Exact LLVM version, e.g. 23.1.5. Leave empty for the latest stable llvmorg-* release with clang+llvm-*-x86_64-pc-windows-msvc.tar.xz.'
+        required: false
+        default: ''
+      draft_release:
+        description: 'Publish the GitHub release as a draft.'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: build-llvm
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build installer and publish release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Locate Inno Setup compiler
+        shell: powershell
+        run: |
+          $iscc = @(
+            'C:\Program Files (x86)\Inno Setup 6\ISCC.exe',
+            'C:\Program Files\Inno Setup 6\ISCC.exe'
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Write-Host 'Inno Setup not preinstalled, installing via Chocolatey...'
+            choco install innosetup -y --no-progress --limit-output
+            $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found at $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append
+          $isccVer = (Get-Item $iscc).VersionInfo.ProductVersion
+          Write-Host "ISCC ready: $iscc (version $isccVer)"
+
+      - name: Build LLVM installer
+        id: build
+        shell: powershell
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\builders\llvm\build.ps1 -LlvmVersion '${{ inputs.llvm_version }}'
+
+      - name: Show build metadata
+        shell: powershell
+        run: |
+          Get-Content .\build\output\build-info.json
+          Write-Host "llvm version = ${{ steps.build.outputs.llvm_version }}"
+          Write-Host "Installer    = ${{ steps.build.outputs.setup_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: llvm-${{ steps.build.outputs.llvm_version }}-setup-x64
+          if-no-files-found: error
+          path: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+            build/output/release-notes.md
+
+      - name: Check versioned release
+        id: rel
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\test-release-published.ps1 -Tag 'llvm-${{ steps.build.outputs.llvm_version }}'
+
+      - name: Publish GitHub release
+        if: steps.rel.outputs.published != 'true'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: llvm-${{ steps.build.outputs.llvm_version }}
+          name: 'LLVM ${{ steps.build.outputs.llvm_version }} Windows x64 一键安装包'
+          body_path: build/output/release-notes.md
+          draft: ${{ inputs.draft_release }}
+          files: |
+            build/output/*.exe
+            build/output/*.sha256.txt
+            build/output/build-info.json
+
+      - name: Publish evergreen alias release
+        if: ${{ !inputs.draft_release }}
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          & .\scripts\publish-alias-release.ps1 -Env 'llvm' -Version '${{ steps.build.outputs.llvm_version }}' -AssetPath 'build/output/${{ steps.build.outputs.setup_name }}' -VersionedTag 'llvm-${{ steps.build.outputs.llvm_version }}' -DisplayName 'LLVM + Clang'
