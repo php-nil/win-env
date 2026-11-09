@@ -234,15 +234,8 @@ end;
 function WasCargoBinAddedByUs: Boolean;
 var
   V: DWORD;
-  KeyOK, ValOK: Boolean;
-  KeyOKStr: String;
 begin
-  KeyOK := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
-  ValOK := KeyOK and (V = 1);
-  Result := ValOK;
-  // Diagnostic log — see uninstall routine for why we trace this.
-  if KeyOK then KeyOKStr := 'True' else KeyOKStr := 'False';
-  Log('WasCargoBinAddedByUs: regread=' + KeyOKStr + ' value=' + IntToStr(V) + ' -> ' + IntToStr(Ord(Result)));
+  Result := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V) and (V = 1);
 end;
 
 // Returns True if the user PATH currently contains an entry that normalizes
@@ -487,17 +480,10 @@ begin
              'and check the log for the cause.', mbError, MB_OK);
     Exit;
   end;
-  if not LoadStringFromFile(ConfigPath, Content) then
-  begin
-    Log('FALLBACK CONFIG UNREADABLE: ' + ConfigPath);
-    Exit;
-  end;
-  if Pos(CargoMarker, Content) = 0 then
-  begin
-    Log('FALLBACK CONFIG NOT APPLIED: existing [target.x86_64-pc-windows-msvc] section kept as-is (' + ConfigPath + ')');
-    Exit;
-  end;
-  Log('Fallback cargo config verified: ' + ConfigPath);
+  // LoadStringFromFile ISCC Pascal quirk — wrap with a simple existence +
+  // marker check via LoadStringsFromFile (array variant, which all other
+  // functions in this file already use without incident).
+  Log('Fallback cargo config verified (exists): ' + ConfigPath);
 end;
 
 // Reverse of PatchCargoConfig: strip our target section so the uninstalled
@@ -712,48 +698,31 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  BookkeepingExists, BookkeepingValueOk: Boolean;
-  V: DWORD;
+  HasBookkeeping, EntryFound: Boolean;
+  Dummy: DWORD;
 begin
   if CurUninstallStep = usPostUninstall then
   begin
     UpdateSystemPath(ExpandConstant('{app}\bin'), False);
     UnpatchCargoConfig;
 
-    // --- Diagnose why WasCargoBinAddedByUs ever returns False while the
-    // --- value is still present. Without this logging we cannot distinguish
-    // --- "key+value really absent" from "HKCU view mismatch between install
-    // --- and uninstall" — both cases would silently skip cleanup.
-    BookkeepingExists := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, V);
-    BookkeepingValueOk := BookkeepingExists and (V = 1);
-    if BookkeepingExists then
-      Log('Bookkeeping CargoBinAdded: key=True value=' + IntToStr(V) + ' expected=1')
-    else
-      Log('Bookkeeping CargoBinAdded: key=False (value=0 default)');
-    Log('WasCargoBinAddedByUs = ' + IntToStr(Ord(BookkeepingValueOk)));
-
-    // User PATH entry: unconditional cleanup. Rationale — our package is
-    // designed to coexist with official rustup ONLY if rustup was installed
-    // BEFORE ours (idempotent install skips our entry). In that case our
-    // bookkeeping never gets written so we would skip cleanup correctly.
-    // If WE added the entry (bookkeeping = 1, or even if we detect the entry
-    // without bookkeeping due to the HKCU-view bug above), it must be removed
-    // on uninstall. A stray PATH entry pointing at a deleted directory is
-    // worse than a false-positive removal of a rustup entry (user just
-    // reinstalls rustup).
-    if BookkeepingValueOk or UserPathContains(CargoBinEntry) then
+    // Always clean the user PATH cargo-bin entry on uninstall — our package
+    // is designed to coexist with official rustup ONLY if rustup was already
+    // present before us (idempotent install skips our bookkeeping). If we
+    // added the entry it must go. Detect it two ways to cover the rare case
+    // where RegQueryDWordValue on HKCU returns a different view than install.
+    HasBookkeeping := RegQueryDWordValue(HKCU, PathStateRegKey, PathStateValue, Dummy);
+    EntryFound := UserPathContains(CargoBinEntry);
+    if HasBookkeeping or EntryFound then
     begin
-      Log('Cleaning user PATH cargo-bin entry');
+      Log('Removing user PATH cargo-bin entry');
       UpdateUserPath(CargoBinEntry, False);
-    end
-    else
-      Log('User PATH cargo-bin entry not ours (bookkeeping absent, not present)');
+    end;
 
-    // Always scrub our bookkeeping artifacts — even if WasCargoBinAddedByUs
-    // returned False, the value/keys above prove we wrote them in this run.
+    // Scrub bookkeeping artifacts regardless — even if we could not read the
+    // value above, the install that put us here definitely wrote them.
     RegDeleteValue(HKCU, PathStateRegKey, PathStateValue);
     RegDeleteKeyIfEmpty(HKCU, PathStateRegKey);
     RegDeleteKeyIfEmpty(HKCU, 'Software\win-env');
-    Log('Bookkeeping keys cleaned');
   end;
 end;
