@@ -374,11 +374,11 @@ begin
                 'linker = ' + Q + AppDir + '\' + '{#SdkLldPath}' + Q + #13#10 +
                 'rustflags = [' + #13#10 +
                 '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUcrtPath}' + Q + ',' + #13#10 +
-                '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUmPath}' + Q + #13#10;
+                '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + '{#SdkUmPath}' + Q;
   if SdkVc <> '' then
     NewSection := NewSection + ',' + #13#10 +
-                  '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + SdkVc + Q + #13#10;
-  NewSection := NewSection + #13#10 +
+                  '    ' + Q + '-L' + Q + ', ' + Q + AppDir + '\' + SdkVc + Q;
+  NewSection := NewSection + #13#10 + #13#10 +
                 ']' + #13#10;
 
   if not FileExists(ConfigPath) then
