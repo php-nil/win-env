@@ -69,6 +69,16 @@ $VcRuntimeDlls = @(
     'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll'
 )
 
+# Optional install task: the setup can install a C/C++ toolchain (cl.exe + rc.exe)
+# on machines that have none, which is what -sys crates (rusqlite bundled,
+# zstd-sys, openssl-sys) and .rc embedding build scripts (Tauri) need.
+# Only the ~1.5 MB official ONLINE bootstrapper is embedded: a full offline
+# layout is 2+ GB and would exceed the GitHub Release per-asset limit. The
+# bootstrapper downloads the workload on the target machine, so the task needs
+# network access at install time. Microsoft's EULA forbids redistributing the
+# compiler binaries themselves, so vendoring cl.exe is not an option.
+$VcBuildToolsUrl = 'https://aka.ms/vs/17/release/vs_BuildTools.exe'
+
 # LLD comes from the rustc component itself (no LLVM download): rustc ships a
 # self-contained LLD whose universal driver is rust-lld.exe (the gcc-ld\*.exe
 # files are per-flavor wrappers around it). See section 4 below.
@@ -781,6 +791,7 @@ finally {
 # setup.iss and only left an empty .cargo\ directory behind after install.
 $SetupName = "rust-$rustVersion-msvc-setup-x64"
 $SetupExe  = Join-Path $OutDir "$SetupName.exe"
+$vcBuildToolsVersion = ''
 
 if (-not $SkipCompile) {
     Write-Step 'Locating Inno Setup compiler (ISCC.exe)'
@@ -796,6 +807,15 @@ if (-not $SkipCompile) {
     if (-not $iscc) { throw 'ISCC.exe not found. Install Inno Setup 6 or use -SkipCompile.' }
     Write-Host "  $iscc"
 
+    # Embedded optional-task bootstrapper. aka.ms always serves the current 17.x
+    # bootstrapper, so never reuse a cached copy (mirrors the vc_redist handling).
+    Write-Step 'Fetching VS Build Tools bootstrapper (optional C/C++ toolchain task)'
+    $vcBuildToolsExe = Join-Path $CacheDir 'vs_BuildTools.exe'
+    if (Test-Path $vcBuildToolsExe) { Remove-Item -Force $vcBuildToolsExe }
+    Download-File $VcBuildToolsUrl $vcBuildToolsExe
+    $vcBuildToolsVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($vcBuildToolsExe).FileVersion
+    Write-Host "  vs_BuildTools : $vcBuildToolsVersion ($([math]::Round((Get-Item $vcBuildToolsExe).Length / 1MB, 1)) MB)"
+
     Write-Step 'Compiling installer'
     & $iscc (Join-Path $ScriptDir 'setup.iss') /Q `
         "/DMyAppVersion=$rustVersion" `
@@ -805,7 +825,8 @@ if (-not $SkipCompile) {
         "/DSdkUcrtPath=$ucrtRel" `
         "/DSdkUmPath=$umRel" `
         "/DSdkVcPath=$vcRel" `
-        "/DSdkLldPath=$rustLldRel"
+        "/DSdkLldPath=$rustLldRel" `
+        "/DVcBootstrapper=$vcBuildToolsExe"
     if ($LASTEXITCODE -ne 0) { throw "ISCC failed with exit code $LASTEXITCODE" }
 }
 else {
@@ -835,6 +856,7 @@ $buildInfo = [ordered]@{
     commands        = @('rustc', 'cargo', 'rustfmt', 'cargo fmt', 'cargo clippy', 'rust-analyzer')
     vcRedistVersion = $vcRedistVersion
     vcRuntimeDlls   = $VcRuntimeDlls
+    vcBuildTools    = $(if ($vcBuildToolsVersion) { "vs_BuildTools.exe $vcBuildToolsVersion (embedded online bootstrapper, optional install task)" } else { 'not fetched (-SkipCompile)' })
     prunedPdbBytes  = $prunedPdbBytes
     stageBytes      = $stageBytes
     builtAt         = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -866,6 +888,7 @@ if (-not $SkipCompile) {
 | LLD | $lldVer（rustc 官方组件内置 rust-lld 通用驱动，经 ``-flavor link`` 运行） |
 | xwin | $XwinVersion（提取 Windows SDK / CRT） |
 | VC++ 运行库 | $vcRedistVersion（app-local：$($VcRuntimeDlls.Count) 个 CRT DLL 释放到 ``bin\``，干净机器无需预装 VC++ Redistributable） |
+| VS Build Tools 引导器 | $vcBuildToolsVersion（"完成"页可选：内嵌微软官方在线引导器，勾选后调起其图形界面安装 C/C++ 编译工具链） |
 
 ## 默认行为
 
@@ -875,6 +898,7 @@ if (-not $SkipCompile) {
 - 安装器在安装时探测系统 MSVC 工具链（VS C++ 工具 + Windows SDK）：
   - 探测到：完全按官方默认，**不写任何 cargo 配置**，rustc 自行发现 ``link.exe`` 与 SDK 库
   - 探测不到：启用包内 LLD（rustc 自带 rust-lld）与内置 Windows SDK / CRT 库（经 xwin 从微软官方 CDN 提取），并写入 ``%USERPROFILE%\.cargo\config.toml`` 配置链接器与库路径（卸载时回收该配置段）；安装器会回读并校验该文件，写入失败会明确告警
+- 可选安装 C/C++ 编译工具链：以"完成"页勾选项形式提供（默认不勾选；静默安装时不出现），仅在探测不到可用 MSVC 工具链时显示；勾选后由内嵌的微软官方 VS Build Tools 在线引导器安装「使用 C++ 的桌面开发」工作负载（保留微软安装器界面，需联网，约 2-3 GB、10-30 分钟）。该步骤在 Rust 安装完成之后独立进行，失败或取消都不影响本包安装结果；工具链由微软安装器独立管理，卸载本包时不会移除
 - 安装/卸载对系统 PATH 均为幂等精确操作，不改动其他条目
 
 ## 重要说明
@@ -883,7 +907,7 @@ if (-not $SkipCompile) {
 - 链接器为 LLD（rustc 自带 rust-lld）：官方文档声明其 PDB 与原生 link.exe 同级，仅不支持已废弃的 /DEBUG:FASTLINK；超大 PDB 场景下 LLD 反而更稳
 - 若 ``cargo build`` 报 ``linking with `link.exe` failed``（尤其是 ``link: extra operand``），说明回退配置未生效：检查 ``%USERPROFILE%\.cargo\config.toml`` 是否存在且包含 ``# win-env: fallback linker config`` 标记；Git 自带的 ``usr\bin\link.exe`` 会抢先解析到 GNU link，必须由该配置把链接器指向 rust-lld
 - 产物依赖 ``VCRUNTIME140.dll``：本包已将其释放到 ``bin\``（在 PATH 中），干净机器无需安装 VC++ Redistributable；如仍需系统级安装，可自行运行微软 vc_redist.x64.exe
-- 含 C 依赖的 crate 需自行配置 ``CC=clang-cl`` 及头文件路径（本包不含 C/C++ 编译器）
+- 含 C 依赖的 crate（rusqlite bundled、zstd-sys、openssl-sys）或 build.rs 需嵌 .rc 资源的项目（Tauri）需要 cl.exe / rc.exe：安装时勾选可选任务即可获得完整 C/C++ 工具链；未勾选或安装失败时本包不含 C/C++ 编译器
 
 ## 校验
 

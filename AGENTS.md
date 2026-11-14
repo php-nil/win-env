@@ -49,7 +49,7 @@
 * **GitHub schedule 的运维事实**：定时只在**默认分支**的 workflow 文件上生效；仓库连续 **60 天无提交活动**后，schedule 会被 GitHub **自动停用**（重新有提交/手动触发后才会恢复）。
 * **版本不硬编码**：补丁版本运行时从官方目录列表解析；解析为空立即终止报错，不猜测 URL。workflow 保留手动指定版本的输入框。
 * **组件只走官方渠道**（PHP/Xdebug/APCu 走 windows.php.net，CA 走 curl.se，nilpack 走其 GitHub Release）；来源写入 `build-info.json` 与发布说明。
-* **暂存目录即安装目录**：`build/stage/<env>` 根目录布局等于安装后的 `C:\pf\<env>`（各环境暂存树按目录隔离），安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。
+* **暂存目录即安装目录**：`build/stage/<env>` 根目录布局等于安装后的 `C:\pf\<env>`（各环境暂存树按目录隔离），安装器只做原样释放 + 少量改写（占位符替换、PATH），不在安装期做下载/拼装。**唯一例外**：rust 安装包在安装收尾阶段（"完成"页勾选项，默认不勾选）可调起内嵌的微软官方 VS Build Tools 在线引导器安装 C/C++ 工具链（`cl.exe` 受 EULA 限制无法随包再分发），详见 [doc/rust.md](doc/rust.md)。
 * **冒烟测试是强制门槛**：组装完成后必须在暂存树上真实执行（当前为 `php -v` 见 Xdebug、APCu 已加载且 CLI 下默认关闭（`-d apc.enable_cli=1` 时 store/fetch 正常）、`date.timezone` 为 Asia/Shanghai、`nilpack.phar --version`），失败即 throw，不产出坏包。
 * **产物三件套**：安装包 exe、`*.sha256.txt`、`build-info.json`，外加 `release-notes.md`；全部上传**带版本号**的 Release 并保留同名 artifact。
 * **每个环境两个 Release**：

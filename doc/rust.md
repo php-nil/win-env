@@ -42,7 +42,7 @@
 ## 3. 安装包行为
 
 - 双击安装，向导默认目录 `C:\pf\rust`，可自行修改。
-- 安装内容即暂存树 `build/stage/rust` 的原样释放：`bin\`（`rustc.exe` / `cargo.exe` / `rustfmt.exe` / `cargo-clippy.exe` 等）、`lib\rustlib\`（标准库与内置 LLD）、`share\doc\rust\html\`（官方 rust-docs 的离线 HTML 文档，对应 `rustup doc` 的内容）、`crt\` / `sdk\`（经 xwin 提取的 CRT/SDK 头文件与库），安装器不在安装期下载或拼装任何内容。安装树里**没有** `.cargo\` 占位目录——兜底配置只写用户级 `%USERPROFILE%\.cargo\config.toml`。
+- 安装内容即暂存树 `build/stage/rust` 的原样释放：`bin\`（`rustc.exe` / `cargo.exe` / `rustfmt.exe` / `cargo-clippy.exe` 等）、`lib\rustlib\`（标准库与内置 LLD）、`share\doc\rust\html\`（官方 rust-docs 的离线 HTML 文档，对应 `rustup doc` 的内容）、`crt\` / `sdk\`（经 xwin 提取的 CRT/SDK 头文件与库），安装器不在安装期下载或拼装任何内容（唯一例外是"完成"页可选的 VS Build Tools 引导器，其下载发生在 Rust 安装完成之后、由用户勾选触发）。安装树里**没有** `.cargo\` 占位目录——兜底配置只写用户级 `%USERPROFILE%\.cargo\config.toml`。
 - PATH（**必加，无安装选项**）：`{app}\bin` 加入**系统** PATH，保证新开命令行中 `rustc` / `cargo` / `rustfmt` 可直接使用。
   - 安装时幂等追加（不重复、不动无关条目、顺带去空条目），并广播 `WM_SETTINGCHANGE`；
   - 卸载时精确移除该条目，其余 PATH 内容保留。
@@ -50,6 +50,14 @@
   - 条目内容与官方 rustup 写入的完全相同（保留 `%USERPROFILE%` 字面量），使 `cargo install` 装出的子命令可直接按名调用；
   - 比较条目时先把 `%USERPROFILE%` 展开，因此"字面量形式"与"已展开形式"视为同一条目，重复安装不会追加重复项；
   - 卸载时**仅当该条目由本安装器新增**才回收（依据 `HKCU\Software\win-env\rust` 的记录值）；机器上若已装官方 rustup 并自带该条目，则保持不动。
+- **可选安装 C/C++ 编译工具链（收尾页勾选项，与 Rust 安装完全解耦）**：
+  - Rust 全部装完、进入"完成"页后才出现该勾选项；**默认不勾选**，静默安装（`/SILENT`）时不显示也不执行（`skipifsilent`）。因此工具链装不装、装成功还是中途取消，都**不影响本包自身的安装结果**。
+  - 仅在探测不到可用 MSVC 工具链（VS C++ 工具目录 + Windows SDK 注册**未同时成立**）时显示。
+  - 勾选并点击"完成"后启动内嵌的微软官方 `vs_BuildTools.exe` 在线引导器（约 1.5 MB，释放到 `%TEMP%\win-env\`），参数为 `--norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --lang zh-CN en-US`，**保留微软安装器自身的图形界面**（不加 `--quiet`）：用户能看到真实进度与成功/失败结果，也可随时取消。`--nocache` 避免残留 1–2 GB 包缓存。
+  - 以 `nowait` 方式调起后安装向导立即退出，不阻塞、不接管其进度；引导器失败也不会让本安装包报错。
+  - 该工具链由微软安装器独立管理（独立卸载项），**卸载本包时不会移除**；安装包对它的唯一职责是"提供入口并调起官方引导器"。
+  - 若此前以"无 MSVC"状态安装过，`ssPostInstall` 写入的兜底 LLD 配置段会保留：`cargo` 仍用 rust-lld 链接，而 `cc` crate 会用新装的 `cl.exe` 编译 C 源码，两者可同时工作。
+  - 构建期只下载并内嵌引导器本身（记录其文件版本到 `build-info.json`），不做离线 layout。
 - **Cargo 链接器配置（"与官方一致"优先，安装时按环境决定）**：安装器在 `ssPostInstall` 探测系统是否已有可用的 MSVC 工具链——
   - **探测到**（系统存在 VS C++ 工具目录 `…\VC\Tools\MSVC`，且 Windows SDK 已注册）：**不写任何 cargo 配置**，与官方 rustup 行为一致，rustc 自行发现 `link.exe` 与 SDK 库路径；若此前在无 VS 机器上安装过并残留本段，安装时一并回收；
   - **探测不到**：写 `%USERPROFILE%\.cargo\config.toml`，新增/替换 `[target.x86_64-pc-windows-msvc]` 段——`linker` 指向安装目录内 rustc 自带的 `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（`{app}` 绝对路径，不依赖 PATH；**不能**指向 `gcc-ld\lld-link.exe`，原因见 §6），`rustflags` 追加 `-L` 指向 `crt\lib\x86_64`、`sdk\lib\ucrt\x86_64`、`sdk\lib\um\x86_64` 三个库目录；
@@ -65,6 +73,7 @@
 | LLD 链接器 | **rustc 组件自带**，无独立下载 | `lib\rustlib\x86_64-pc-windows-msvc\bin\rust-lld.exe`（多 flavor 通用驱动，`linker` 直接指向它；`gcc-ld\{ld.lld,ld64.lld,wasm-ld,lld-link}.exe` 只是它的 flavor 包装器，本包不使用） |
 | Windows SDK / CRT | 微软官方 CDN（`https://aka.ms/vs/17/release`），经 [xwin](https://github.com/Jake-Shadle/xwin) 提取 | `crt\`（VC 头文件与 `msvcrt`/`vcruntime` 导入库）、`sdk\`（UCRT 与 Windows SDK 头文件/`kernel32` 等导入库） |
 | 版本发现 | GitHub API（xwin 最新 release） | 自动取最新 xwin 的 Windows MSVC `.tar.gz` 资产，避免硬编码版本被清理后 404 |
+| VS Build Tools 引导器（可选任务） | 微软官方 `https://aka.ms/vs/17/release/vs_BuildTools.exe` | 仅内嵌约 1.5 MB 的**在线引导器**（不做离线 layout：完整 layout 约 2+ GB，超出 GitHub Release 单资产 2 GB 上限）；构建期记录其文件版本到 `build-info.json` |
 | 安装器 | [Inno Setup 6](https://jrsoftware.org/isinfo.php) | GitHub windows runner 预装；缺失时 workflow 用 Chocolatey 兜底安装 |
 
 ## 5. 本地构建
@@ -133,7 +142,7 @@ ISCC 查找顺序：`ISCC` 环境变量 → `C:\Program Files (x86)\Inno Setup 6
 - **许可**：包内含从微软官方 CDN 提取的 CRT/SDK 文件，微软条款要求再分发对象为"已授权的 Visual Studio 使用者"，用户需自行确认。见 [rust-msvc.md §五](rust-msvc.md)。
 - **PDB / 调试信息**：MSVC 目标用 **CodeView / PDB**，调试器为 VS / WinDbg / CDB（`gdb` / `lldb` 读不了 PDB，它们要 DWARF，只有 `*-windows-gnu` 目标才产出 DWARF）。官方 LLD 文档明确声明其 PDB 与 `link.exe` **同级（at parity）**，唯一缺口是已废弃的 `/DEBUG:FASTLINK`（VS 2026 起该选项已被移除）；另外 `link.exe` 在超大 PDB（单流 > ~2 GB）上会链接失败，LLD 反而更能扛。因此对**纯 Rust** 的调试体验，本包（LLD）与原生 `link.exe` 实际等同，发布构建更无影响。机器上已装 VS（C++ 工具 + Windows SDK）时，安装器会自动走官方 `link.exe` 路径、不写任何配置（见 §3），无需手工覆盖；只有在**无 VS** 的机器上才由本包提供 LLD 兜底，此时若确需 `link.exe`（如重度 C++ 互操作调试、Edit-and-Continue），再自备 VS 并设 `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=link.exe`。
   - 提示：`cargo build` 的 debug profile 默认已带 `debug = true`（等价 `-C debuginfo=2`）；release 默认 `-C debuginfo=0`，如需发布版也能调试可显式设 `[profile.release] debug = true`。
-- **含 C 依赖的 crate**：包内不提供 `clang-cl`，此类 crate 需自行准备 C 编译器（如另装 LLVM）。`cc` crate 在 MSVC 目标下优先找 `cl.exe`。
+- **含 C 依赖的 crate / `.rc` 资源**：安装时勾选可选任务即可装好 VS Build Tools（含 `cl.exe` 与 `rc.exe`），之后 `rusqlite`(`bundled`)、`zstd-sys`、`openssl-sys` 以及 Tauri 这类在 `build.rs` 里嵌 `.rc` 的项目都能直接构建；未勾选或安装失败时，本包不含 C/C++ 编译器，需自行准备（`cc` crate 在 MSVC 目标下优先找 `cl.exe`）。
 - **兜底 cargo 配置为当前用户级**（仅在没有系统 MSVC 工具链的机器上出现）：`config.toml` 写在执行安装的用户的 `%USERPROFILE%` 下；同一机器的**其他用户**没有该段配置，其 `cargo build` 需自行补 `linker` / `rustflags`（机器级方案未落地）。用户 PATH 条目（`%USERPROFILE%\.cargo\bin`）同样只作用于执行安装的用户。
 - **提权到其他管理员账户时 HKCU 会写错人**：安装器需要管理员权限，若用户通过 UAC"输入另一位管理员账户"提权，则 `%USERPROFILE%` 与 `HKCU\Environment` 都属于那位管理员，真正的日常用户既不会得到 `.cargo\bin` 用户 PATH，也得不到兜底 `config.toml`（系统 PATH 与文件本身不受影响）。要修复得在 Inno 中枚举登录会话并写入原用户 hive，目前未实现。
 - **与官方 rustup 共存时的可见性**：用户级 PATH 在有效 PATH 中排在系统 PATH 之前，若机器上已装 rustup，`%USERPROFILE%\.cargo\bin\rustc.exe` 垫片会先命中，本包的 `C:\pf\rust\bin` 被遮蔽（`rustc -vV` 显示 rustup 选中的工具链）。这是 rustup 的既有设计，本包不改写 rustup 的 `settings.toml`；判断当前生效的是哪一个用 `where rustc` / `rustc --print sysroot`。

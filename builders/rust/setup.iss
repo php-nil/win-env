@@ -19,6 +19,15 @@
 #ifndef OutputBaseFilename
   #define OutputBaseFilename "rust-setup-x64"
 #endif
+; Optional C/C++ toolchain. build.ps1 passes the small official VS Build Tools
+; bootstrapper here; when it is absent (e.g. a hand-run ISCC invocation) the
+; [Files]/[Run] entries disappear and the installer stays valid.
+#ifndef VcBootstrapper
+  #define VcBootstrapper ""
+#endif
+#if FileExists(VcBootstrapper)
+  #define HaveVcBuildTools
+#endif
 ; SDK lib paths relative to the install root (verified against xwin 0.10.0
 ; splat layout: crt\lib\<arch> = VC CRT, sdk\lib\ucrt\<arch> = UCRT,
 ; sdk\lib\um\<arch> = Windows SDK).
@@ -79,6 +88,22 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+#ifdef HaveVcBuildTools
+; Kept in the user temp dir rather than {tmp}: the Finished-page entry launches
+; it with the nowait flag, so the file must outlive Setup's temp cleanup.
+Source: "{#VcBootstrapper}"; DestDir: "{%TEMP}\win-env"; DestName: "vs_BuildTools.exe"; Flags: ignoreversion
+#endif
+
+[Run]
+#ifdef HaveVcBuildTools
+; Offered as a checkbox on the Finished page, i.e. AFTER Rust is fully installed:
+; the optional toolchain can never affect this package's result. Deliberately
+; NOT silent (-no --quiet): Microsoft's installer shows its own UI with the
+; "Desktop development with C++" workload preselected, so the user can watch
+; progress, see success/failure, or cancel at will. --nocache avoids leaving a
+; 1-2 GB package cache behind. skipifsilent keeps unattended installs unattended.
+Filename: "{%TEMP}\win-env\vs_BuildTools.exe"; Parameters: "--norestart --nocache --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --lang zh-CN en-US"; Description: "Install C/C++ build tools (VS Build Tools: ~2-3 GB download, 10-30 min; opens the Microsoft installer now that Rust is installed)"; Flags: postinstall nowait skipifsilent shellexec unchecked; Check: NeedsVcBuildTools
+#endif
 
 [Code]
 const
@@ -647,6 +672,14 @@ end;
 function SystemMsvcUsable: Boolean;
 begin
   Result := HasWindowsSdk and FindSystemVcTools;
+end;
+
+// The optional C/C++ toolchain entry only makes sense when this machine cannot
+// compile C today. Referenced from the [Run] Check, so the Finished-page
+// checkbox is hidden on machines that already have a usable MSVC toolchain.
+function NeedsVcBuildTools: Boolean;
+begin
+  Result := not SystemMsvcUsable;
 end;
 
 // Decide whether the user's global cargo config needs our fallback section.
